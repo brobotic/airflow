@@ -251,6 +251,9 @@ def verify_load():
 
 def export_to_elasticsearch():
     """Export mart_titles_enriched rows from Postgres into Elasticsearch."""
+    logging.getLogger("elastic_transport.transport").setLevel(logging.WARNING)
+    logging.getLogger("elasticsearch").setLevel(logging.WARNING)
+
     es_host = os.getenv("ELASTICSEARCH_HOST", "http://192.168.1.60:9200")
     auth_mode = "api_key" if os.getenv("ELASTICSEARCH_API_KEY") else (
         "basic_auth"
