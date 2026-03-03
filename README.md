@@ -1,5 +1,9 @@
 # Airflow (local)
 
+# TODO
+
+* postgres exporter
+
 ## Authoring new ETL DAGs
 
 Use the shared helpers for notifications and standard task wiring:
@@ -21,6 +25,17 @@ Run the DAG unit tests from this folder:
 Expected result:
 
 `10 passed`
+
+## Postgres persistence
+
+The Postgres service in `postgres.yaml` stores data in the named Docker volume `postgres_movies_data`, so data persists across container restarts and `docker compose stop/start`.
+
+To keep data, use:
+
+`docker compose -f postgres.yaml up -d`
+`docker compose -f postgres.yaml restart postgres_movies`
+
+Avoid using `docker compose -f postgres.yaml down -v` unless you intentionally want to delete the database volume.
 
 
 # DAG Authoring (ETL pattern)

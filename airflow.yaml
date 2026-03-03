@@ -64,6 +64,10 @@ x-airflow-common:
     AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: 'true'
     AIRFLOW__CORE__LOAD_EXAMPLES: 'true'
     AIRFLOW__CORE__EXECUTION_API_SERVER_URL: 'http://airflow-apiserver:8080/execution/'
+    AIRFLOW__METRICS__STATSD_ON: 'true'
+    AIRFLOW__METRICS__STATSD_HOST: statsd-exporter
+    AIRFLOW__METRICS__STATSD_PORT: 9125
+    AIRFLOW__METRICS__STATSD_PREFIX: airflow
     # yamllint disable rule:line-length
     # Use simple http server on scheduler for health checks
     # See https://airflow.apache.org/docs/apache-airflow/stable/administration-and-deployment/logging-monitoring/check-health.html#scheduler-health-check-server
@@ -87,6 +91,8 @@ x-airflow-common:
       condition: service_healthy
     postgres:
       condition: service_healthy
+    statsd-exporter:
+      condition: service_started
 
 services:
   postgres:
@@ -116,6 +122,15 @@ services:
       timeout: 30s
       retries: 50
       start_period: 30s
+    restart: always
+
+  statsd-exporter:
+    image: prom/statsd-exporter:latest
+    command: --statsd.listen-udp=:9125 --web.listen-address=:9102
+    expose:
+      - 9125
+    ports:
+      - "9102:9102"
     restart: always
 
   airflow-apiserver:

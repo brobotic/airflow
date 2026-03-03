@@ -13,12 +13,10 @@ except ModuleNotFoundError:
     from dags.etl_tasks import create_standard_etl_tasks
     from dags.notifications import notify_discord_failure
 
-# ── Config ────────────────────────────────────────────────────────────────────
 TSV_PATH = "/opt/airflow/datasets/title.basics.tsv"
 CONN_ID  = "postgres_movies"
 TABLE    = "title_basics"
 
-# ── Helpers ───────────────────────────────────────────────────────────────────
 
 def clean_value(value: str):
     """Replace IMDb null sentinel with Python None."""
@@ -31,9 +29,6 @@ def to_int_or_none(value):
     if value == "" or value == r"\N":
         return None
     return int(value) if value.isdigit() else None
-
-
-# ── Task functions ────────────────────────────────────────────────────────────
 
 def create_table():
     """Create the target table if it doesn't already exist."""

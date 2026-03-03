@@ -1,8 +1,12 @@
 import logging
+import os
+from importlib import import_module
 from datetime import datetime
 from functools import partial
+from typing import Any
 
 from airflow import DAG
+from airflow.operators.python import PythonOperator
 from airflow.providers.postgres.hooks.postgres import PostgresHook
 
 try:
@@ -17,6 +21,43 @@ TABLE = "mart_titles_enriched"
 
 # Depends on these source tables being loaded first
 SOURCE_TABLES = ["title_basics", "title_ratings"]
+ES_INDEX = os.getenv("ELASTICSEARCH_INDEX", "mart_titles_enriched")
+ES_CHUNK_SIZE = int(os.getenv("ELASTICSEARCH_CHUNK_SIZE", "1000"))
+ES_MAX_CHUNK_BYTES = int(os.getenv("ELASTICSEARCH_MAX_CHUNK_BYTES", str(20 * 1024 * 1024)))
+ES_THREAD_COUNT = int(os.getenv("ELASTICSEARCH_THREAD_COUNT", "4"))
+ES_QUEUE_SIZE = int(os.getenv("ELASTICSEARCH_QUEUE_SIZE", "8"))
+ES_REQUEST_TIMEOUT = int(os.getenv("ELASTICSEARCH_REQUEST_TIMEOUT", "120"))
+ES_FAST_INDEX_MODE = os.getenv("ELASTICSEARCH_FAST_INDEX_MODE", "false").lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+
+
+def _create_elasticsearch_client() -> Any:
+    host = os.getenv("ELASTICSEARCH_HOST", "http://192.168.1.60:9200")
+    api_key = os.getenv("ELASTICSEARCH_API_KEY")
+    username = os.getenv("ELASTICSEARCH_USERNAME")
+    password = os.getenv("ELASTICSEARCH_PASSWORD")
+
+    Elasticsearch, _ = _get_elasticsearch_modules()
+    if api_key:
+        return Elasticsearch(hosts=[host], api_key=api_key)
+    if username and password:
+        return Elasticsearch(hosts=[host], basic_auth=(username, password))
+    return Elasticsearch(hosts=[host])
+
+
+def _get_elasticsearch_modules() -> tuple[Any, Any]:
+    try:
+        elasticsearch_module = import_module("elasticsearch")
+    except ModuleNotFoundError as exc:
+        raise RuntimeError(
+            "Elasticsearch client package not installed. Add 'elasticsearch>=8,<9' to requirements and rebuild Airflow image."
+        ) from exc
+
+    return elasticsearch_module.Elasticsearch, elasticsearch_module.helpers
 
 
 def create_table():
@@ -65,6 +106,28 @@ def extract_and_load():
     logging.info("Refreshing '%s'...", TABLE)
     hook.run(f"TRUNCATE TABLE {TABLE};")
     hook.run(f"""
+        WITH basics_dedup AS (
+            SELECT DISTINCT ON (tconst)
+                tconst,
+                primary_title,
+                original_title,
+                title_type,
+                start_year,
+                end_year,
+                runtime_minutes,
+                genres,
+                is_adult
+            FROM title_basics
+            ORDER BY tconst, start_year DESC NULLS LAST
+        ),
+        ratings_dedup AS (
+            SELECT DISTINCT ON (tconst)
+                tconst,
+                average_rating,
+                num_votes
+            FROM title_ratings
+            ORDER BY tconst, num_votes DESC NULLS LAST, average_rating DESC NULLS LAST
+        )
         INSERT INTO {TABLE} (
             tconst,
             primary_title,
@@ -110,8 +173,8 @@ def extract_and_load():
                 ELSE '2020s+'
             END AS era,
             now() AS last_refreshed_at
-        FROM title_basics b
-        LEFT JOIN title_ratings r ON b.tconst = r.tconst;
+        FROM basics_dedup b
+        LEFT JOIN ratings_dedup r ON b.tconst = r.tconst;
     """)
 
     indexes = [
@@ -173,6 +236,150 @@ def verify_load():
     }
 
 
+def export_to_elasticsearch():
+    """Export mart_titles_enriched rows from Postgres into Elasticsearch."""
+    hook = PostgresHook(postgres_conn_id=CONN_ID)
+    rows = hook.get_records(
+        f"""
+        SELECT
+            tconst,
+            primary_title,
+            original_title,
+            title_type,
+            start_year,
+            end_year,
+            runtime_minutes,
+            genres,
+            is_adult,
+            average_rating,
+            num_votes,
+            rating_bucket,
+            era,
+            last_refreshed_at
+        FROM {TABLE};
+        """
+    )
+
+    if not rows:
+        logging.warning("No rows in '%s'; skipping Elasticsearch export.", TABLE)
+        return {"indexed": 0, "index": ES_INDEX}
+
+    _, es_helpers = _get_elasticsearch_modules()
+    client = _create_elasticsearch_client()
+
+    if client.indices.exists(index=ES_INDEX):
+        client.indices.delete(index=ES_INDEX)
+
+    client.indices.create(index=ES_INDEX)
+
+    original_refresh_interval = None
+    original_replicas = None
+
+    if ES_FAST_INDEX_MODE:
+        settings = client.indices.get_settings(index=ES_INDEX)
+        index_settings = settings.get(ES_INDEX, {}).get("settings", {}).get("index", {})
+        original_refresh_interval = index_settings.get("refresh_interval")
+        original_replicas = index_settings.get("number_of_replicas")
+
+        client.indices.put_settings(
+            index=ES_INDEX,
+            settings={
+                "refresh_interval": "-1",
+                "number_of_replicas": 0,
+            },
+        )
+        logging.info(
+            "Fast index mode enabled for '%s' (refresh_interval=-1, number_of_replicas=0).",
+            ES_INDEX,
+        )
+
+    def actions():
+        for row in rows:
+            (
+                tconst,
+                primary_title,
+                original_title,
+                title_type,
+                start_year,
+                end_year,
+                runtime_minutes,
+                genres,
+                is_adult,
+                average_rating,
+                num_votes,
+                rating_bucket,
+                era,
+                last_refreshed_at,
+            ) = row
+
+            yield {
+                "_index": ES_INDEX,
+                "_id": tconst,
+                "_source": {
+                    "tconst": tconst,
+                    "primary_title": primary_title,
+                    "original_title": original_title,
+                    "title_type": title_type,
+                    "start_year": start_year,
+                    "end_year": end_year,
+                    "runtime_minutes": runtime_minutes,
+                    "genres": genres,
+                    "is_adult": is_adult,
+                    "average_rating": average_rating,
+                    "num_votes": num_votes,
+                    "rating_bucket": rating_bucket,
+                    "era": era,
+                    "last_refreshed_at": (
+                        last_refreshed_at.isoformat() if last_refreshed_at else None
+                    ),
+                },
+            }
+
+    indexed = 0
+    errors = 0
+
+    try:
+        for ok, _ in es_helpers.parallel_bulk(
+            client,
+            actions(),
+            thread_count=ES_THREAD_COUNT,
+            queue_size=ES_QUEUE_SIZE,
+            chunk_size=ES_CHUNK_SIZE,
+            max_chunk_bytes=ES_MAX_CHUNK_BYTES,
+            request_timeout=ES_REQUEST_TIMEOUT,
+            raise_on_error=False,
+            raise_on_exception=False,
+        ):
+            if ok:
+                indexed += 1
+            else:
+                errors += 1
+
+        if errors:
+            raise ValueError(
+                f"Elasticsearch bulk export completed with {errors} errors."
+            )
+
+        client.indices.refresh(index=ES_INDEX)
+        logging.info("Exported %d rows to Elasticsearch index '%s'.", indexed, ES_INDEX)
+        return {"indexed": indexed, "errors": errors, "index": ES_INDEX}
+    finally:
+        if ES_FAST_INDEX_MODE:
+            restore_settings = {}
+            if original_refresh_interval is not None:
+                restore_settings["refresh_interval"] = original_refresh_interval
+            if original_replicas is not None:
+                restore_settings["number_of_replicas"] = original_replicas
+
+            if restore_settings:
+                client.indices.put_settings(index=ES_INDEX, settings=restore_settings)
+                logging.info(
+                    "Restored index settings for '%s': %s",
+                    ES_INDEX,
+                    restore_settings,
+                )
+
+
 with DAG(
     dag_id="mart_titles_enriched",
     description="Build mart_titles_enriched from title_basics + title_ratings",
@@ -187,10 +394,18 @@ with DAG(
     catchup=False,
     tags=["movies", "mart"],
 ) as dag:
-    create_standard_etl_tasks(
+    _, _, verify_load_task, notify_task = create_standard_etl_tasks(
         create_table_callable=create_table,
         extract_and_load_callable=extract_and_load,
         verify_load_callable=verify_load,
         table=TABLE,
         success_title="✅ mart_titles_enriched completed",
     )
+
+    export_to_elasticsearch_task = PythonOperator(
+        task_id="export_to_elasticsearch",
+        python_callable=export_to_elasticsearch,
+    )
+
+    verify_load_task.set_downstream(export_to_elasticsearch_task)
+    export_to_elasticsearch_task.set_downstream(notify_task)
