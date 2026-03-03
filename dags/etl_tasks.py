@@ -2,10 +2,7 @@ from functools import partial
 
 from airflow.operators.python import PythonOperator
 
-try:
-    from notifications import notify_discord_success
-except ModuleNotFoundError:
-    from dags.notifications import notify_discord_success
+from dags.notifications import notify_discord_success
 
 
 def create_standard_etl_tasks(

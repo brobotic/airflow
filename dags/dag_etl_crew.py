@@ -6,16 +6,10 @@ from functools import partial
 from airflow import DAG
 from airflow.providers.postgres.hooks.postgres import PostgresHook
 
-try:
-    from etl_tasks import create_standard_etl_tasks
-    from notifications import (
-        notify_discord_failure,
-    )
-except ModuleNotFoundError:
-    from dags.etl_tasks import create_standard_etl_tasks
-    from dags.notifications import (
-        notify_discord_failure,
-    )
+from dags.etl_tasks import create_standard_etl_tasks
+from dags.notifications import (
+    notify_discord_failure,
+)
 
 TSV_PATH = "/opt/airflow/datasets/title.crew.tsv"
 CONN_ID = "postgres_movies"
