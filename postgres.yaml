@@ -21,8 +21,27 @@ services:
       timeout: 5s
       retries: 5
 
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: pgadmin_movies
+    restart: unless-stopped
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@movies.local
+      PGADMIN_DEFAULT_PASSWORD: admin_pass
+    ports:
+      - "5050:80"
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+      - ./pgadmin/servers.json:/pgadmin4/servers.json:ro
+    networks:
+      - airflow_default
+    depends_on:
+      postgres_movies:
+        condition: service_healthy
+
 volumes:
   postgres_movies_data:
+  pgadmin_data:
 
 networks:
   airflow_default:
