@@ -55,12 +55,13 @@ def _create_elasticsearch_client() -> Any:
 def _get_elasticsearch_modules() -> tuple[Any, Any]:
     try:
         elasticsearch_module = import_module("elasticsearch")
+        helpers_module = import_module("elasticsearch.helpers")
     except ModuleNotFoundError as exc:
         raise RuntimeError(
             "Elasticsearch client package not installed. Add 'elasticsearch>=8,<9' to requirements and rebuild Airflow image."
         ) from exc
 
-    return elasticsearch_module.Elasticsearch, elasticsearch_module.helpers
+    return elasticsearch_module.Elasticsearch, helpers_module
 
 
 def _format_duration(seconds: float) -> str:
