@@ -1,5 +1,6 @@
 import logging
 import os
+import time
 from importlib import import_module
 from datetime import datetime
 from functools import partial
@@ -22,11 +23,13 @@ TABLE = "mart_titles_enriched"
 # Depends on these source tables being loaded first
 SOURCE_TABLES = ["title_basics", "title_ratings"]
 ES_INDEX = os.getenv("ELASTICSEARCH_INDEX", "mart_titles_enriched")
-ES_CHUNK_SIZE = int(os.getenv("ELASTICSEARCH_CHUNK_SIZE", "1000"))
-ES_MAX_CHUNK_BYTES = int(os.getenv("ELASTICSEARCH_MAX_CHUNK_BYTES", str(20 * 1024 * 1024)))
-ES_THREAD_COUNT = int(os.getenv("ELASTICSEARCH_THREAD_COUNT", "4"))
-ES_QUEUE_SIZE = int(os.getenv("ELASTICSEARCH_QUEUE_SIZE", "8"))
+ES_CHUNK_SIZE = int(os.getenv("ELASTICSEARCH_CHUNK_SIZE", "500"))
+ES_MAX_CHUNK_BYTES = int(os.getenv("ELASTICSEARCH_MAX_CHUNK_BYTES", str(10 * 1024 * 1024)))
+ES_THREAD_COUNT = int(os.getenv("ELASTICSEARCH_THREAD_COUNT", "2"))
+ES_QUEUE_SIZE = int(os.getenv("ELASTICSEARCH_QUEUE_SIZE", "2"))
 ES_REQUEST_TIMEOUT = int(os.getenv("ELASTICSEARCH_REQUEST_TIMEOUT", "120"))
+ES_FETCH_SIZE = int(os.getenv("ELASTICSEARCH_FETCH_SIZE", "2000"))
+ES_PROGRESS_EVERY = int(os.getenv("ELASTICSEARCH_PROGRESS_EVERY", "10000"))
 ES_FAST_INDEX_MODE = os.getenv("ELASTICSEARCH_FAST_INDEX_MODE", "false").lower() in {
     "1",
     "true",
@@ -58,6 +61,15 @@ def _get_elasticsearch_modules() -> tuple[Any, Any]:
         ) from exc
 
     return elasticsearch_module.Elasticsearch, elasticsearch_module.helpers
+
+
+def _format_duration(seconds: float) -> str:
+    total_seconds = max(int(seconds), 0)
+    hours, remainder = divmod(total_seconds, 3600)
+    minutes, secs = divmod(remainder, 60)
+    if hours > 0:
+        return f"{hours:02d}:{minutes:02d}:{secs:02d}"
+    return f"{minutes:02d}:{secs:02d}"
 
 
 def create_table():
@@ -238,31 +250,43 @@ def verify_load():
 
 def export_to_elasticsearch():
     """Export mart_titles_enriched rows from Postgres into Elasticsearch."""
-    hook = PostgresHook(postgres_conn_id=CONN_ID)
-    rows = hook.get_records(
-        f"""
-        SELECT
-            tconst,
-            primary_title,
-            original_title,
-            title_type,
-            start_year,
-            end_year,
-            runtime_minutes,
-            genres,
-            is_adult,
-            average_rating,
-            num_votes,
-            rating_bucket,
-            era,
-            last_refreshed_at
-        FROM {TABLE};
-        """
+    es_host = os.getenv("ELASTICSEARCH_HOST", "http://192.168.1.60:9200")
+    auth_mode = "api_key" if os.getenv("ELASTICSEARCH_API_KEY") else (
+        "basic_auth"
+        if os.getenv("ELASTICSEARCH_USERNAME") and os.getenv("ELASTICSEARCH_PASSWORD")
+        else "none"
+    )
+    logging.info(
+        "Elasticsearch export settings: host=%s index=%s chunk_size=%d max_chunk_bytes=%d thread_count=%d queue_size=%d fetch_size=%d request_timeout=%ds progress_every=%d fast_index_mode=%s auth=%s",
+        es_host,
+        ES_INDEX,
+        ES_CHUNK_SIZE,
+        ES_MAX_CHUNK_BYTES,
+        ES_THREAD_COUNT,
+        ES_QUEUE_SIZE,
+        ES_FETCH_SIZE,
+        ES_REQUEST_TIMEOUT,
+        ES_PROGRESS_EVERY,
+        ES_FAST_INDEX_MODE,
+        auth_mode,
     )
 
-    if not rows:
+    hook = PostgresHook(postgres_conn_id=CONN_ID)
+    total_rows = hook.get_first(f"SELECT COUNT(*) FROM {TABLE};")[0]
+    if total_rows == 0:
         logging.warning("No rows in '%s'; skipping Elasticsearch export.", TABLE)
-        return {"indexed": 0, "index": ES_INDEX}
+        return {"indexed": 0, "errors": 0, "index": ES_INDEX}
+
+    logging.info(
+        "Preparing to export %d rows from '%s' to index '%s' (chunk=%d, threads=%d, queue=%d, fetch=%d).",
+        total_rows,
+        TABLE,
+        ES_INDEX,
+        ES_CHUNK_SIZE,
+        ES_THREAD_COUNT,
+        ES_QUEUE_SIZE,
+        ES_FETCH_SIZE,
+    )
 
     _, es_helpers = _get_elasticsearch_modules()
     client = _create_elasticsearch_client()
@@ -294,49 +318,85 @@ def export_to_elasticsearch():
         )
 
     def actions():
-        for row in rows:
-            (
-                tconst,
-                primary_title,
-                original_title,
-                title_type,
-                start_year,
-                end_year,
-                runtime_minutes,
-                genres,
-                is_adult,
-                average_rating,
-                num_votes,
-                rating_bucket,
-                era,
-                last_refreshed_at,
-            ) = row
+        conn = hook.get_conn()
+        cursor = conn.cursor(name="mart_titles_enriched_export")
+        cursor.itersize = ES_FETCH_SIZE
+        try:
+            cursor.execute(
+                f"""
+                SELECT
+                    tconst,
+                    primary_title,
+                    original_title,
+                    title_type,
+                    start_year,
+                    end_year,
+                    runtime_minutes,
+                    genres,
+                    is_adult,
+                    average_rating,
+                    num_votes,
+                    rating_bucket,
+                    era,
+                    last_refreshed_at
+                FROM {TABLE};
+                """
+            )
 
-            yield {
-                "_index": ES_INDEX,
-                "_id": tconst,
-                "_source": {
-                    "tconst": tconst,
-                    "primary_title": primary_title,
-                    "original_title": original_title,
-                    "title_type": title_type,
-                    "start_year": start_year,
-                    "end_year": end_year,
-                    "runtime_minutes": runtime_minutes,
-                    "genres": genres,
-                    "is_adult": is_adult,
-                    "average_rating": average_rating,
-                    "num_votes": num_votes,
-                    "rating_bucket": rating_bucket,
-                    "era": era,
-                    "last_refreshed_at": (
-                        last_refreshed_at.isoformat() if last_refreshed_at else None
-                    ),
-                },
-            }
+            while True:
+                batch = cursor.fetchmany(ES_FETCH_SIZE)
+                if not batch:
+                    break
+
+                for row in batch:
+                    (
+                        tconst,
+                        primary_title,
+                        original_title,
+                        title_type,
+                        start_year,
+                        end_year,
+                        runtime_minutes,
+                        genres,
+                        is_adult,
+                        average_rating,
+                        num_votes,
+                        rating_bucket,
+                        era,
+                        last_refreshed_at,
+                    ) = row
+
+                    yield {
+                        "_index": ES_INDEX,
+                        "_id": tconst,
+                        "_source": {
+                            "tconst": tconst,
+                            "primary_title": primary_title,
+                            "original_title": original_title,
+                            "title_type": title_type,
+                            "start_year": start_year,
+                            "end_year": end_year,
+                            "runtime_minutes": runtime_minutes,
+                            "genres": genres,
+                            "is_adult": is_adult,
+                            "average_rating": average_rating,
+                            "num_votes": num_votes,
+                            "rating_bucket": rating_bucket,
+                            "era": era,
+                            "last_refreshed_at": (
+                                last_refreshed_at.isoformat() if last_refreshed_at else None
+                            ),
+                        },
+                    }
+        finally:
+            cursor.close()
+            conn.close()
 
     indexed = 0
     errors = 0
+    processed = 0
+    started_at = time.monotonic()
+    last_log_at = started_at
 
     try:
         for ok, _ in es_helpers.parallel_bulk(
@@ -350,10 +410,32 @@ def export_to_elasticsearch():
             raise_on_error=False,
             raise_on_exception=False,
         ):
+            processed += 1
             if ok:
                 indexed += 1
             else:
                 errors += 1
+
+            if ES_PROGRESS_EVERY > 0 and processed % ES_PROGRESS_EVERY == 0:
+                now = time.monotonic()
+                elapsed = now - started_at
+                interval = now - last_log_at
+                total_rate = processed / elapsed if elapsed > 0 else 0.0
+                interval_rate = ES_PROGRESS_EVERY / interval if interval > 0 else 0.0
+                remaining_docs = max(total_rows - processed, 0)
+                eta_seconds = (remaining_docs / total_rate) if total_rate > 0 else None
+                eta_text = _format_duration(eta_seconds) if eta_seconds is not None else "n/a"
+                logging.info(
+                    "Elasticsearch export progress: processed=%d/%d indexed=%d errors=%d total_rate=%.1f docs/s interval_rate=%.1f docs/s eta=%s",
+                    processed,
+                    total_rows,
+                    indexed,
+                    errors,
+                    total_rate,
+                    interval_rate,
+                    eta_text,
+                )
+                last_log_at = now
 
         if errors:
             raise ValueError(
@@ -361,7 +443,19 @@ def export_to_elasticsearch():
             )
 
         client.indices.refresh(index=ES_INDEX)
-        logging.info("Exported %d rows to Elasticsearch index '%s'.", indexed, ES_INDEX)
+        completed_at = time.monotonic()
+        total_elapsed = completed_at - started_at
+        total_elapsed_text = _format_duration(total_elapsed)
+        avg_rate = indexed / total_elapsed if total_elapsed > 0 else 0.0
+        logging.info(
+            "Export complete: indexed=%d errors=%d total=%d elapsed=%s avg_rate=%.1f docs/s index='%s'.",
+            indexed,
+            errors,
+            processed,
+            total_elapsed_text,
+            avg_rate,
+            ES_INDEX,
+        )
         return {"indexed": indexed, "errors": errors, "index": ES_INDEX}
     finally:
         if ES_FAST_INDEX_MODE:

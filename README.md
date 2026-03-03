@@ -203,3 +203,48 @@ A copy-ready scaffold is available at:
 Use it by copying and renaming it, then updating the import:
 
 `cp tests/test_dag_etl_template.py.example tests/test_dag_etl_your_dag.py`
+
+## Elasticsearch export tuning (`mart_titles_enriched`)
+
+The DAG `dags/dag_mart_titles_enriched.py` includes an `export_to_elasticsearch` task with env-driven tuning.
+
+### Environment variables
+
+- `ELASTICSEARCH_HOST` (default: `http://192.168.1.60:9200`)
+- `ELASTICSEARCH_INDEX` (default: `mart_titles_enriched`)
+- `ELASTICSEARCH_API_KEY` (optional)
+- `ELASTICSEARCH_USERNAME` / `ELASTICSEARCH_PASSWORD` (optional)
+- `ELASTICSEARCH_FETCH_SIZE` (default: `2000`) — Postgres fetch batch size (streaming cursor)
+- `ELASTICSEARCH_CHUNK_SIZE` (default: `500`) — docs per bulk chunk
+- `ELASTICSEARCH_MAX_CHUNK_BYTES` (default: `10485760`) — max bytes per bulk request (10MB)
+- `ELASTICSEARCH_THREAD_COUNT` (default: `2`) — parallel bulk workers
+- `ELASTICSEARCH_QUEUE_SIZE` (default: `2`) — in-memory work queue per bulk helper
+- `ELASTICSEARCH_REQUEST_TIMEOUT` (default: `120`) — request timeout in seconds
+- `ELASTICSEARCH_PROGRESS_EVERY` (default: `10000`) — log progress every N processed docs
+- `ELASTICSEARCH_FAST_INDEX_MODE` (default: `false`) — temporarily set `refresh_interval=-1` and `number_of_replicas=0`, then restore
+
+### Recommended profiles
+
+Safe profile (low memory pressure / OOM-resistant):
+
+- `ELASTICSEARCH_FETCH_SIZE=2000`
+- `ELASTICSEARCH_CHUNK_SIZE=500`
+- `ELASTICSEARCH_MAX_CHUNK_BYTES=10485760`
+- `ELASTICSEARCH_THREAD_COUNT=2`
+- `ELASTICSEARCH_QUEUE_SIZE=2`
+- `ELASTICSEARCH_REQUEST_TIMEOUT=120`
+- `ELASTICSEARCH_PROGRESS_EVERY=10000`
+- `ELASTICSEARCH_FAST_INDEX_MODE=true`
+
+Fast profile (increase throughput if cluster has headroom):
+
+- `ELASTICSEARCH_FETCH_SIZE=5000`
+- `ELASTICSEARCH_CHUNK_SIZE=2000`
+- `ELASTICSEARCH_MAX_CHUNK_BYTES=20971520`
+- `ELASTICSEARCH_THREAD_COUNT=4`
+- `ELASTICSEARCH_QUEUE_SIZE=4`
+- `ELASTICSEARCH_REQUEST_TIMEOUT=180`
+- `ELASTICSEARCH_PROGRESS_EVERY=20000`
+- `ELASTICSEARCH_FAST_INDEX_MODE=true`
+
+If task memory spikes or worker restarts occur, lower `ELASTICSEARCH_CHUNK_SIZE`, `ELASTICSEARCH_THREAD_COUNT`, and `ELASTICSEARCH_QUEUE_SIZE` first.
