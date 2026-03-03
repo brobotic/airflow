@@ -3,3 +3,16 @@ logs/
 config/airflow.cfg
 config/*.log
 .env
+
+# macOS
+.DS_Store
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+*.egg
