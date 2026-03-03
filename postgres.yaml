@@ -26,7 +26,7 @@ services:
     container_name: pgadmin_movies
     restart: unless-stopped
     environment:
-      PGADMIN_DEFAULT_EMAIL: admin@movies.local
+      PGADMIN_DEFAULT_EMAIL: admin@movies.com
       PGADMIN_DEFAULT_PASSWORD: admin_pass
     ports:
       - "5050:80"
