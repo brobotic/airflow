@@ -55,6 +55,7 @@ services:
 
 volumes:
   postgres_movies_data:
+    external: true
     name: postgres_movies_data
   pgadmin_data:
     name: pgadmin_data

@@ -37,6 +37,23 @@ To keep data, use:
 
 Avoid using `docker compose -f postgres.yaml down -v` unless you intentionally want to delete the database volume.
 
+## Validate DAG outputs in Postgres
+
+Use the helper script to quickly verify expected DAG output tables exist and contain at least N rows:
+
+`scripts/validate_dag_outputs.sh`
+
+Examples:
+
+- Default check (all known ETL/mart tables, min 1 row each):
+    - `scripts/validate_dag_outputs.sh`
+- Set one global threshold for all default tables:
+    - `scripts/validate_dag_outputs.sh --min-rows 100`
+- Override specific tables with custom thresholds:
+    - `scripts/validate_dag_outputs.sh --table mart_titles_enriched:1000 --table title_ratings:5000`
+
+The script exits with code `0` when all checks pass, and non-zero when any table is missing or below threshold.
+
 
 # DAG Authoring (ETL pattern)
 
