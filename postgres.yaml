@@ -39,6 +39,20 @@ services:
       postgres_movies:
         condition: service_healthy
 
+  postgres_exporter:
+    image: quay.io/prometheuscommunity/postgres-exporter:latest
+    container_name: postgres_exporter_movies
+    restart: unless-stopped
+    environment:
+      DATA_SOURCE_NAME: postgresql://movies_user:movies_pass@postgres_movies:5432/movies_db?sslmode=disable
+    networks:
+      - airflow_default
+    ports:
+      - "9187:9187"
+    depends_on:
+      postgres_movies:
+        condition: service_healthy
+
 volumes:
   postgres_movies_data:
     name: postgres_movies_data
