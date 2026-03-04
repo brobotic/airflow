@@ -1,4 +1,6 @@
 import logging
+import os
+import time
 from datetime import datetime
 from functools import partial
 
@@ -16,6 +18,9 @@ CONN_ID = "postgres_movies"
 TABLE = "mart_director_credits"
 REQUIRED_SOURCE_TABLES = ["title_basics", "title_crew", "name_basics", "title_principals"]
 OPTIONAL_SOURCE_TABLES = ["title_ratings"]
+FETCH_SIZE = int(os.getenv("MART_DIRECTOR_FETCH_SIZE", "2000"))
+INSERT_BATCH_SIZE = int(os.getenv("MART_DIRECTOR_INSERT_BATCH_SIZE", "1000"))
+PROGRESS_EVERY = int(os.getenv("MART_DIRECTOR_PROGRESS_EVERY", "10000"))
 
 
 def _table_exists(hook: PostgresHook, table_name: str) -> bool:
@@ -84,7 +89,7 @@ def extract_and_load():
         else "LEFT JOIN (SELECT NULL::VARCHAR(20) AS tconst, NULL::DOUBLE PRECISION AS average_rating, NULL::INTEGER AS num_votes) r ON false"
     )
 
-    sql = f"""
+    select_sql = f"""
         WITH directors AS (
             SELECT
                 b.tconst,
@@ -105,18 +110,6 @@ def extract_and_load():
             WHERE p.category IN ('cinematographer', 'director of photography', 'director_of_photography')
                OR (p.job IS NOT NULL AND lower(p.job) LIKE '%director of photography%')
         )
-        INSERT INTO {TABLE} (
-            director_nconst,
-            director_name,
-            dop_nconst,
-            dop_name,
-            movie_count,
-            avg_rating,
-            total_votes,
-            first_movie_year,
-            last_movie_year,
-            last_refreshed_at
-        )
         SELECT
             d.director_nconst,
             dn.primary_name AS director_name,
@@ -133,11 +126,76 @@ def extract_and_load():
         LEFT JOIN name_basics dn ON dn.nconst = d.director_nconst
         LEFT JOIN name_basics dpn ON dpn.nconst = dc.dop_nconst
         {ratings_join}
-        GROUP BY d.director_nconst, dn.primary_name, dc.dop_nconst, dpn.primary_name;
+        GROUP BY d.director_nconst, dn.primary_name, dc.dop_nconst, dpn.primary_name
+        ORDER BY d.director_nconst, dc.dop_nconst;
     """
-    logging.info("Building '%s' with required Director + DoP credits.", TABLE)
+    logging.info(
+        "Building '%s' with batched load (fetch_size=%d insert_batch_size=%d progress_every=%d).",
+        TABLE,
+        FETCH_SIZE,
+        INSERT_BATCH_SIZE,
+        PROGRESS_EVERY,
+    )
 
-    hook.run(sql)
+    conn = hook.get_conn()
+    cursor = conn.cursor(name="mart_director_credits_export")
+    cursor.itersize = FETCH_SIZE
+
+    inserted = 0
+    started_at = time.monotonic()
+    last_log_at = started_at
+
+    try:
+        cursor.execute(select_sql)
+        while True:
+            batch = cursor.fetchmany(FETCH_SIZE)
+            if not batch:
+                break
+
+            hook.insert_rows(
+                table=TABLE,
+                rows=batch,
+                target_fields=[
+                    "director_nconst",
+                    "director_name",
+                    "dop_nconst",
+                    "dop_name",
+                    "movie_count",
+                    "avg_rating",
+                    "total_votes",
+                    "first_movie_year",
+                    "last_movie_year",
+                    "last_refreshed_at",
+                ],
+                commit_every=INSERT_BATCH_SIZE,
+            )
+
+            inserted += len(batch)
+            if PROGRESS_EVERY > 0 and inserted % PROGRESS_EVERY == 0:
+                now = time.monotonic()
+                elapsed = now - started_at
+                interval = now - last_log_at
+                total_rate = inserted / elapsed if elapsed > 0 else 0.0
+                interval_rate = PROGRESS_EVERY / interval if interval > 0 else 0.0
+                logging.info(
+                    "Director mart load progress: inserted=%d total_rate=%.1f rows/s interval_rate=%.1f rows/s",
+                    inserted,
+                    total_rate,
+                    interval_rate,
+                )
+                last_log_at = now
+    finally:
+        cursor.close()
+        conn.close()
+
+    elapsed = time.monotonic() - started_at
+    avg_rate = inserted / elapsed if elapsed > 0 else 0.0
+    logging.info(
+        "Director mart data load complete: inserted=%d elapsed=%.1fs avg_rate=%.1f rows/s.",
+        inserted,
+        elapsed,
+        avg_rate,
+    )
 
     indexes = [
         f"CREATE INDEX IF NOT EXISTS idx_{TABLE}_director_nconst ON {TABLE} (director_nconst);",
