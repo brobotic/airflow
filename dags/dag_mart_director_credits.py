@@ -1,10 +1,13 @@
 import logging
 import os
 import time
+from importlib import import_module
 from datetime import datetime
 from functools import partial
+from typing import Any
 
 from airflow import DAG
+from airflow.operators.python import PythonOperator
 from airflow.providers.postgres.hooks.postgres import PostgresHook
 
 try:
@@ -21,6 +24,55 @@ OPTIONAL_SOURCE_TABLES = ["title_ratings"]
 FETCH_SIZE = int(os.getenv("MART_DIRECTOR_FETCH_SIZE", "2000"))
 INSERT_BATCH_SIZE = int(os.getenv("MART_DIRECTOR_INSERT_BATCH_SIZE", "1000"))
 PROGRESS_EVERY = int(os.getenv("MART_DIRECTOR_PROGRESS_EVERY", "10000"))
+ES_INDEX = os.getenv("ELASTICSEARCH_DIRECTOR_INDEX", "mart_director_credits")
+ES_CHUNK_SIZE = int(os.getenv("ELASTICSEARCH_CHUNK_SIZE", "500"))
+ES_MAX_CHUNK_BYTES = int(os.getenv("ELASTICSEARCH_MAX_CHUNK_BYTES", str(10 * 1024 * 1024)))
+ES_THREAD_COUNT = int(os.getenv("ELASTICSEARCH_THREAD_COUNT", "2"))
+ES_QUEUE_SIZE = int(os.getenv("ELASTICSEARCH_QUEUE_SIZE", "2"))
+ES_REQUEST_TIMEOUT = int(os.getenv("ELASTICSEARCH_REQUEST_TIMEOUT", "120"))
+ES_FETCH_SIZE = int(os.getenv("ELASTICSEARCH_FETCH_SIZE", "2000"))
+ES_PROGRESS_EVERY = int(os.getenv("ELASTICSEARCH_PROGRESS_EVERY", "10000"))
+ES_FAST_INDEX_MODE = os.getenv("ELASTICSEARCH_FAST_INDEX_MODE", "false").lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+
+
+def _get_elasticsearch_modules() -> tuple[Any, Any]:
+    try:
+        elasticsearch_module = import_module("elasticsearch")
+        helpers_module = import_module("elasticsearch.helpers")
+    except ModuleNotFoundError as exc:
+        raise RuntimeError(
+            "Elasticsearch client package not installed. Add 'elasticsearch>=8,<9' to requirements and rebuild Airflow image."
+        ) from exc
+
+    return elasticsearch_module.Elasticsearch, helpers_module
+
+
+def _create_elasticsearch_client() -> Any:
+    host = os.getenv("ELASTICSEARCH_HOST", "http://192.168.1.60:9200")
+    api_key = os.getenv("ELASTICSEARCH_API_KEY")
+    username = os.getenv("ELASTICSEARCH_USERNAME")
+    password = os.getenv("ELASTICSEARCH_PASSWORD")
+
+    Elasticsearch, _ = _get_elasticsearch_modules()
+    if api_key:
+        return Elasticsearch(hosts=[host], api_key=api_key)
+    if username and password:
+        return Elasticsearch(hosts=[host], basic_auth=(username, password))
+    return Elasticsearch(hosts=[host])
+
+
+def _format_duration(seconds: float) -> str:
+    total_seconds = max(int(seconds), 0)
+    hours, remainder = divmod(total_seconds, 3600)
+    minutes, secs = divmod(remainder, 60)
+    if hours > 0:
+        return f"{hours:02d}:{minutes:02d}:{secs:02d}"
+    return f"{minutes:02d}:{secs:02d}"
 
 
 def _table_exists(hook: PostgresHook, table_name: str) -> bool:
@@ -238,6 +290,224 @@ def verify_load():
     }
 
 
+def export_to_elasticsearch():
+    """Export mart_director_credits rows from Postgres into Elasticsearch."""
+    logging.getLogger("elastic_transport.transport").setLevel(logging.WARNING)
+    logging.getLogger("elasticsearch").setLevel(logging.WARNING)
+
+    es_host = os.getenv("ELASTICSEARCH_HOST", "http://192.168.1.60:9200")
+    auth_mode = "api_key" if os.getenv("ELASTICSEARCH_API_KEY") else (
+        "basic_auth"
+        if os.getenv("ELASTICSEARCH_USERNAME") and os.getenv("ELASTICSEARCH_PASSWORD")
+        else "none"
+    )
+    logging.info(
+        "Elasticsearch export settings: host=%s index=%s chunk_size=%d max_chunk_bytes=%d thread_count=%d queue_size=%d fetch_size=%d request_timeout=%ds progress_every=%d fast_index_mode=%s auth=%s",
+        es_host,
+        ES_INDEX,
+        ES_CHUNK_SIZE,
+        ES_MAX_CHUNK_BYTES,
+        ES_THREAD_COUNT,
+        ES_QUEUE_SIZE,
+        ES_FETCH_SIZE,
+        ES_REQUEST_TIMEOUT,
+        ES_PROGRESS_EVERY,
+        ES_FAST_INDEX_MODE,
+        auth_mode,
+    )
+
+    hook = PostgresHook(postgres_conn_id=CONN_ID)
+    total_rows = hook.get_first(f"SELECT COUNT(*) FROM {TABLE};")[0]
+    if total_rows == 0:
+        logging.warning("No rows in '%s'; skipping Elasticsearch export.", TABLE)
+        return {"indexed": 0, "errors": 0, "index": ES_INDEX}
+
+    logging.info(
+        "Preparing to export %d rows from '%s' to index '%s' (chunk=%d, threads=%d, queue=%d, fetch=%d).",
+        total_rows,
+        TABLE,
+        ES_INDEX,
+        ES_CHUNK_SIZE,
+        ES_THREAD_COUNT,
+        ES_QUEUE_SIZE,
+        ES_FETCH_SIZE,
+    )
+
+    _, es_helpers = _get_elasticsearch_modules()
+    client = _create_elasticsearch_client()
+
+    if client.indices.exists(index=ES_INDEX):
+        client.indices.delete(index=ES_INDEX)
+
+    client.indices.create(index=ES_INDEX)
+
+    original_refresh_interval = None
+    original_replicas = None
+
+    if ES_FAST_INDEX_MODE:
+        settings = client.indices.get_settings(index=ES_INDEX)
+        index_settings = settings.get(ES_INDEX, {}).get("settings", {}).get("index", {})
+        original_refresh_interval = index_settings.get("refresh_interval")
+        original_replicas = index_settings.get("number_of_replicas")
+
+        client.indices.put_settings(
+            index=ES_INDEX,
+            settings={
+                "refresh_interval": "-1",
+                "number_of_replicas": 0,
+            },
+        )
+        logging.info(
+            "Fast index mode enabled for '%s' (refresh_interval=-1, number_of_replicas=0).",
+            ES_INDEX,
+        )
+
+    def actions():
+        conn = hook.get_conn()
+        cursor = conn.cursor(name="mart_director_credits_export")
+        cursor.itersize = ES_FETCH_SIZE
+        try:
+            cursor.execute(
+                f"""
+                SELECT
+                    director_nconst,
+                    director_name,
+                    dop_nconst,
+                    dop_name,
+                    movie_count,
+                    avg_rating,
+                    total_votes,
+                    first_movie_year,
+                    last_movie_year,
+                    last_refreshed_at
+                FROM {TABLE};
+                """
+            )
+
+            while True:
+                batch = cursor.fetchmany(ES_FETCH_SIZE)
+                if not batch:
+                    break
+
+                for row in batch:
+                    (
+                        director_nconst,
+                        director_name,
+                        dop_nconst,
+                        dop_name,
+                        movie_count,
+                        avg_rating,
+                        total_votes,
+                        first_movie_year,
+                        last_movie_year,
+                        last_refreshed_at,
+                    ) = row
+
+                    doc_id = f"{director_nconst}::{dop_nconst or 'none'}"
+                    yield {
+                        "_index": ES_INDEX,
+                        "_id": doc_id,
+                        "_source": {
+                            "director_nconst": director_nconst,
+                            "director_name": director_name,
+                            "dop_nconst": dop_nconst,
+                            "dop_name": dop_name,
+                            "movie_count": movie_count,
+                            "avg_rating": avg_rating,
+                            "total_votes": total_votes,
+                            "first_movie_year": first_movie_year,
+                            "last_movie_year": last_movie_year,
+                            "last_refreshed_at": (
+                                last_refreshed_at.isoformat() if last_refreshed_at else None
+                            ),
+                        },
+                    }
+        finally:
+            cursor.close()
+            conn.close()
+
+    indexed = 0
+    errors = 0
+    processed = 0
+    started_at = time.monotonic()
+    last_log_at = started_at
+
+    try:
+        for ok, _ in es_helpers.parallel_bulk(
+            client,
+            actions(),
+            thread_count=ES_THREAD_COUNT,
+            queue_size=ES_QUEUE_SIZE,
+            chunk_size=ES_CHUNK_SIZE,
+            max_chunk_bytes=ES_MAX_CHUNK_BYTES,
+            request_timeout=ES_REQUEST_TIMEOUT,
+            raise_on_error=False,
+            raise_on_exception=False,
+        ):
+            processed += 1
+            if ok:
+                indexed += 1
+            else:
+                errors += 1
+
+            if ES_PROGRESS_EVERY > 0 and processed % ES_PROGRESS_EVERY == 0:
+                now = time.monotonic()
+                elapsed = now - started_at
+                interval = now - last_log_at
+                total_rate = processed / elapsed if elapsed > 0 else 0.0
+                interval_rate = ES_PROGRESS_EVERY / interval if interval > 0 else 0.0
+                remaining_docs = max(total_rows - processed, 0)
+                eta_seconds = (remaining_docs / total_rate) if total_rate > 0 else None
+                eta_text = _format_duration(eta_seconds) if eta_seconds is not None else "n/a"
+                logging.info(
+                    "Elasticsearch export progress: processed=%d/%d indexed=%d errors=%d total_rate=%.1f docs/s interval_rate=%.1f docs/s eta=%s",
+                    processed,
+                    total_rows,
+                    indexed,
+                    errors,
+                    total_rate,
+                    interval_rate,
+                    eta_text,
+                )
+                last_log_at = now
+
+        if errors:
+            raise ValueError(
+                f"Elasticsearch bulk export completed with {errors} errors."
+            )
+
+        client.indices.refresh(index=ES_INDEX)
+        completed_at = time.monotonic()
+        total_elapsed = completed_at - started_at
+        total_elapsed_text = _format_duration(total_elapsed)
+        avg_rate = indexed / total_elapsed if total_elapsed > 0 else 0.0
+        logging.info(
+            "Export complete: indexed=%d errors=%d total=%d elapsed=%s avg_rate=%.1f docs/s index='%s'.",
+            indexed,
+            errors,
+            processed,
+            total_elapsed_text,
+            avg_rate,
+            ES_INDEX,
+        )
+        return {"indexed": indexed, "errors": errors, "index": ES_INDEX}
+    finally:
+        if ES_FAST_INDEX_MODE:
+            restore_settings = {}
+            if original_refresh_interval is not None:
+                restore_settings["refresh_interval"] = original_refresh_interval
+            if original_replicas is not None:
+                restore_settings["number_of_replicas"] = original_replicas
+
+            if restore_settings:
+                client.indices.put_settings(index=ES_INDEX, settings=restore_settings)
+                logging.info(
+                    "Restored index settings for '%s': %s",
+                    ES_INDEX,
+                    restore_settings,
+                )
+
+
 with DAG(
     dag_id="mart_director_credits",
     description="Build director-level movie mart and enrich with DoP credits",
@@ -252,10 +522,18 @@ with DAG(
     catchup=False,
     tags=["movies", "mart", "directors"],
 ) as dag:
-    create_standard_etl_tasks(
+    _, _, verify_load_task, notify_task = create_standard_etl_tasks(
         create_table_callable=create_table,
         extract_and_load_callable=extract_and_load,
         verify_load_callable=verify_load,
         table=TABLE,
         success_title="✅ mart_director_credits completed",
     )
+
+    export_to_elasticsearch_task = PythonOperator(
+        task_id="export_to_elasticsearch",
+        python_callable=export_to_elasticsearch,
+    )
+
+    verify_load_task.set_downstream(export_to_elasticsearch_task)
+    export_to_elasticsearch_task.set_downstream(notify_task)

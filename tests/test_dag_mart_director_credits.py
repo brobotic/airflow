@@ -39,19 +39,21 @@ def test_principals_is_required_source_table():
     assert "title_principals" not in module.OPTIONAL_SOURCE_TABLES
 
 
-def test_dag_task_chain():
-    """Assert DAG wiring enforces create_table -> extract_and_load -> verify_load -> notify_discord."""
+def test_dag_task_chain_includes_elasticsearch_export():
+    """Assert DAG wiring includes verify_load -> export_to_elasticsearch -> notify_discord."""
     dag = module.dag
     assert dag.dag_id == "mart_director_credits"
 
     create_task = dag.get_task("create_table")
     extract_task = dag.get_task("extract_and_load")
     verify_task = dag.get_task("verify_load")
+    export_task = dag.get_task("export_to_elasticsearch")
     notify_task = dag.get_task("notify_discord")
 
     assert extract_task.task_id in create_task.downstream_task_ids
     assert verify_task.task_id in extract_task.downstream_task_ids
-    assert notify_task.task_id in verify_task.downstream_task_ids
+    assert export_task.task_id in verify_task.downstream_task_ids
+    assert notify_task.task_id in export_task.downstream_task_ids
 
 
 def test_failure_callback_exists():
