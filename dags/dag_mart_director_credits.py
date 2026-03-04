@@ -11,9 +11,23 @@ from airflow.operators.python import PythonOperator
 from airflow.providers.postgres.hooks.postgres import PostgresHook
 
 try:
+    from airflow_datasets import (
+        NAME_BASICS_DATASET,
+        TITLE_BASICS_DATASET,
+        TITLE_CREW_DATASET,
+        TITLE_PRINCIPALS_DATASET,
+        TITLE_RATINGS_DATASET,
+    )
     from etl_tasks import create_standard_etl_tasks
     from notifications import notify_discord_failure
 except ModuleNotFoundError:
+    from dags.airflow_datasets import (
+        NAME_BASICS_DATASET,
+        TITLE_BASICS_DATASET,
+        TITLE_CREW_DATASET,
+        TITLE_PRINCIPALS_DATASET,
+        TITLE_RATINGS_DATASET,
+    )
     from dags.etl_tasks import create_standard_etl_tasks
     from dags.notifications import notify_discord_failure
 
@@ -518,7 +532,13 @@ with DAG(
         )
     },
     start_date=datetime(2025, 1, 1),
-    schedule="@daily",
+    schedule=[
+        TITLE_BASICS_DATASET,
+        TITLE_CREW_DATASET,
+        NAME_BASICS_DATASET,
+        TITLE_PRINCIPALS_DATASET,
+        TITLE_RATINGS_DATASET,
+    ],
     catchup=False,
     tags=["movies", "mart", "directors"],
 ) as dag:
