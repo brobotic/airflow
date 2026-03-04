@@ -19,6 +19,7 @@ declare -a DEFAULT_TABLES=(
   "title_ratings"
   "mart_titles_enriched"
   "mart_director_credits"
+  "mart_movie_credits"
 )
 
 usage() {

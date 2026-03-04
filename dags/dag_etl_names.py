@@ -7,9 +7,11 @@ from airflow import DAG
 from airflow.providers.postgres.hooks.postgres import PostgresHook
 
 try:
+    from airflow_datasets import NAME_BASICS_DATASET
     from etl_tasks import create_standard_etl_tasks
     from notifications import notify_discord_failure
 except ModuleNotFoundError:
+    from dags.airflow_datasets import NAME_BASICS_DATASET
     from dags.etl_tasks import create_standard_etl_tasks
     from dags.notifications import notify_discord_failure
 
@@ -161,4 +163,5 @@ with DAG(
         verify_load_callable=verify_load,
         table=TABLE,
         success_title="✅ movies_names_etl completed",
+        extract_outlets=[NAME_BASICS_DATASET],
     )

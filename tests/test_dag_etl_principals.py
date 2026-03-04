@@ -1,3 +1,4 @@
+from dags import airflow_datasets
 from dags import dag_etl_principals as module
 
 
@@ -180,3 +181,10 @@ def test_failure_callback_exists():
     dag = module.dag
     assert "on_failure_callback" in dag.default_args
     assert callable(dag.default_args["on_failure_callback"])
+
+
+def test_extract_task_publishes_title_principals_dataset():
+    """Ensure extract_and_load publishes the title_principals dataset event."""
+    extract_task = module.dag.get_task("extract_and_load")
+    outlet_uris = {dataset.uri for dataset in extract_task.outlets}
+    assert airflow_datasets.TITLE_PRINCIPALS_DATASET.uri in outlet_uris

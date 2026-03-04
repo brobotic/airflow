@@ -52,11 +52,17 @@ Examples:
 - Override specific tables with custom thresholds:
     - `scripts/validate_dag_outputs.sh --table mart_titles_enriched:1000 --table title_ratings:5000`
 
+Default checks include both mart tables plus the new per-movie credits mart:
+
+- `mart_titles_enriched`
+- `mart_director_credits`
+- `mart_movie_credits`
+
 The script exits with code `0` when all checks pass, and non-zero when any table is missing or below threshold.
 
 ## Link movies to directors
 
-Yes — the current pipeline supports movie-to-director linking:
+Linking movies to directors:
 
 - Movie IDs come from `title_basics.tconst` (`dags/dag_etl_movies.py`).
 - Director IDs come from `title_crew.directors` (`dags/dag_etl_crew.py`) as comma-separated `nconst` values.
@@ -78,6 +84,8 @@ WHERE b.title_type = 'movie';
 ```
 
 Note: `dags/dag_mart_director_credits.py` builds a director-level aggregate mart, not a per-movie mapping table.
+
+For a per-movie enrichment mart containing director and DoP fields, use `dags/dag_mart_movie_credits.py` (`mart_movie_credits`).
 
 Run it from the host with `psql`:
 
