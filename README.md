@@ -54,6 +54,49 @@ Examples:
 
 The script exits with code `0` when all checks pass, and non-zero when any table is missing or below threshold.
 
+## Link movies to directors
+
+Yes — the current pipeline supports movie-to-director linking:
+
+- Movie IDs come from `title_basics.tconst` (`dags/dag_etl_movies.py`).
+- Director IDs come from `title_crew.directors` (`dags/dag_etl_crew.py`) as comma-separated `nconst` values.
+- Director names come from `name_basics.nconst -> primary_name` (`dags/dag_etl_names.py`).
+
+Use this query to get movie/director pairs:
+
+```sql
+SELECT
+    b.tconst,
+    b.primary_title,
+    d.director_nconst,
+    n.primary_name AS director_name
+FROM title_basics b
+JOIN title_crew c ON c.tconst = b.tconst
+CROSS JOIN LATERAL unnest(string_to_array(c.directors, ',')) AS d(director_nconst)
+LEFT JOIN name_basics n ON n.nconst = trim(d.director_nconst)
+WHERE b.title_type = 'movie';
+```
+
+Note: `dags/dag_mart_director_credits.py` builds a director-level aggregate mart, not a per-movie mapping table.
+
+Run it from the host with `psql`:
+
+```bash
+PGPASSWORD=movies_pass psql -h localhost -p 5433 -U movies_user -d movies_db -c "
+SELECT
+    b.tconst,
+    b.primary_title,
+    d.director_nconst,
+    n.primary_name AS director_name
+FROM title_basics b
+JOIN title_crew c ON c.tconst = b.tconst
+CROSS JOIN LATERAL unnest(string_to_array(c.directors, ',')) AS d(director_nconst)
+LEFT JOIN name_basics n ON n.nconst = trim(d.director_nconst)
+WHERE b.title_type = 'movie'
+LIMIT 20;
+"
+```
+
 
 # DAG Authoring (ETL pattern)
 
