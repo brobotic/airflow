@@ -1,3 +1,4 @@
+from dags import airflow_datasets
 from dags import dag_mart_titles_enriched as module
 
 
@@ -23,3 +24,12 @@ def test_failure_callback_exists():
     dag = module.dag
     assert "on_failure_callback" in dag.default_args
     assert callable(dag.default_args["on_failure_callback"])
+
+
+def test_dag_uses_both_source_datasets_as_schedule():
+    """Ensure mart DAG is triggered by both title_basics and title_ratings datasets."""
+    dag = module.dag
+    dataset_condition = dag.timetable.dataset_condition
+    schedule_dataset_uris = {uri for uri, _ in dataset_condition.iter_datasets()}
+    assert airflow_datasets.TITLE_BASICS_DATASET.uri in schedule_dataset_uris
+    assert airflow_datasets.TITLE_RATINGS_DATASET.uri in schedule_dataset_uris

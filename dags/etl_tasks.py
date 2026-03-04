@@ -14,9 +14,14 @@ def create_standard_etl_tasks(
     verify_load_callable,
     table: str,
     success_title: str,
+    extract_outlets=None,
 ):
     t1 = PythonOperator(task_id="create_table", python_callable=create_table_callable)
-    t2 = PythonOperator(task_id="extract_and_load", python_callable=extract_and_load_callable)
+    t2 = PythonOperator(
+        task_id="extract_and_load",
+        python_callable=extract_and_load_callable,
+        outlets=extract_outlets,
+    )
     t3 = PythonOperator(task_id="verify_load", python_callable=verify_load_callable)
     t4 = PythonOperator(
         task_id="notify_discord",

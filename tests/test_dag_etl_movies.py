@@ -1,5 +1,6 @@
 import pytest
 
+from dags import airflow_datasets
 from dags import dag_etl_movies as module
 
 
@@ -224,4 +225,11 @@ def test_dag_task_chain():
 
     assert extract_task.task_id in create_task.downstream_task_ids
     assert verify_task.task_id in extract_task.downstream_task_ids
+
+
+def test_extract_task_publishes_title_basics_dataset():
+    """Ensure extract_and_load publishes the title_basics dataset event."""
+    extract_task = module.dag.get_task("extract_and_load")
+    outlet_uris = {dataset.uri for dataset in extract_task.outlets}
+    assert airflow_datasets.TITLE_BASICS_DATASET.uri in outlet_uris
 
