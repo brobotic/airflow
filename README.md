@@ -330,40 +330,13 @@ If task memory spikes or worker restarts occur, lower `ELASTICSEARCH_CHUNK_SIZE`
 
 # Queries
 
-```
--- 1. Row count and rated %
-SELECT
-    COUNT(*)                                              AS total_titles,
-    COUNT(average_rating)                                 AS rated_titles,
-    ROUND(COUNT(average_rating)::numeric / COUNT(*) * 100, 1) AS pct_rated
-FROM mart_titles_enriched;
+Use `scripts/validate_mart.sh` to execute the maintained validation SQL in
+`scripts/validate_mart.sql`.
 
--- 2. Rating bucket distribution
-SELECT rating_bucket, COUNT(*) AS cnt
-FROM mart_titles_enriched
-GROUP BY rating_bucket
-ORDER BY cnt DESC;
+The SQL file now validates all mart DAG outputs:
 
--- 3. Top 10 movies by votes
-SELECT primary_title, start_year, average_rating, num_votes
-FROM mart_titles_enriched
-WHERE title_type = 'movie'
-ORDER BY num_votes DESC NULLS LAST
-LIMIT 10;
+- `mart_titles_enriched`
+- `mart_movie_credits`
+- `mart_director_credits`
 
--- 4. Title count per era
-SELECT era, COUNT(*) AS cnt
-FROM mart_titles_enriched
-GROUP BY era
-ORDER BY era NULLS LAST;
-
--- 5. Average rating by title type
-SELECT
-    title_type,
-    ROUND(AVG(average_rating)::numeric, 2) AS avg_rating,
-    COUNT(*) AS total
-FROM mart_titles_enriched
-WHERE average_rating IS NOT NULL
-GROUP BY title_type
-ORDER BY avg_rating DESC;
-```
+It includes row-count/freshness checks plus per-mart distribution and top-record sanity queries.
