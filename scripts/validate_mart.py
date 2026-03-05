@@ -16,10 +16,31 @@ from typing import Iterable
 COMMENT_RE = re.compile(r"^\s*--\s*(.*)$")
 
 
+class Ansi:
+    RESET = "\033[0m"
+    BOLD = "\033[1m"
+    GREEN = "\033[32m"
+    YELLOW = "\033[33m"
+    RED = "\033[31m"
+    CYAN = "\033[36m"
+
+
 @dataclass
 class QueryBlock:
     description: str
     sql: str
+
+
+def _colors_enabled() -> bool:
+    if os.getenv("NO_COLOR") is not None:
+        return False
+    return sys.stdout.isatty()
+
+
+def colorize(text: str, *styles: str) -> str:
+    if not _colors_enabled() or not styles:
+        return text
+    return f"{''.join(styles)}{text}{Ansi.RESET}"
 
 
 def parse_args() -> argparse.Namespace:
@@ -179,14 +200,14 @@ def main() -> int:
         print(f"Error: no executable SQL blocks found in {sql_file}", file=sys.stderr)
         return 1
 
-    print(f"Running mart validation queries in {args.db} via service {args.service}...")
+    print(colorize(f"Running mart validation queries in {args.db} via service {args.service}...", Ansi.BOLD, Ansi.CYAN))
     print(f"SQL file: {sql_file}")
     print()
 
     failed_blocks: list[str] = []
 
     for block in blocks:
-        print(f"=== {block.description} ===")
+        print(colorize(f"=== {block.description} ===", Ansi.BOLD, Ansi.YELLOW))
         ok, stdout, stderr = execute_query(
             compose_file=compose_file,
             service=args.service,
@@ -199,27 +220,30 @@ def main() -> int:
             print(stdout.rstrip())
 
         if ok:
-            print(f"Status: OK — {block.description}")
+            print(colorize(f"Status: OK — {block.description}", Ansi.BOLD, Ansi.GREEN))
         else:
             failed_blocks.append(block.description)
-            print(f"Status: ERROR — {block.description}")
+            print(colorize(f"Status: ERROR — {block.description}", Ansi.BOLD, Ansi.RED))
             error_output = (stderr or "").strip()
             if error_output:
-                print(error_output, file=sys.stderr)
+                print(colorize(error_output, Ansi.RED), file=sys.stderr)
 
         print()
 
-    print("Validation run completed.")
-    print(f"Queries executed: {len(blocks)}")
-    print(f"Queries failed:   {len(failed_blocks)}")
+    print(colorize("Validation run completed.", Ansi.BOLD, Ansi.CYAN))
+    print(colorize(f"Queries executed: {len(blocks)}", Ansi.BOLD))
+    if failed_blocks:
+        print(colorize(f"Queries failed:   {len(failed_blocks)}", Ansi.BOLD, Ansi.RED))
+    else:
+        print(colorize("Queries failed:   0", Ansi.BOLD, Ansi.GREEN))
 
     if failed_blocks:
-        print("Failed query blocks:")
+        print(colorize("Failed query blocks:", Ansi.BOLD, Ansi.RED))
         for description in failed_blocks:
-            print(f"- {description}")
+            print(colorize(f"- {description}", Ansi.RED))
         return 1
 
-    print("All query blocks succeeded.")
+    print(colorize("All query blocks succeeded.", Ansi.BOLD, Ansi.GREEN))
     return 0
 
 
