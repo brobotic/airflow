@@ -1,5 +1,6 @@
 import csv
 import logging
+import sys
 from datetime import datetime
 from functools import partial
 
@@ -46,6 +47,17 @@ def to_bool_or_none(value):
     return None
 
 
+def configure_csv_field_limit():
+    limit = sys.maxsize
+    while True:
+        try:
+            csv.field_size_limit(limit)
+            logging.info("Configured CSV field size limit to %d", limit)
+            return
+        except OverflowError:
+            limit = int(limit / 10)
+
+
 def create_table():
     hook = PostgresHook(postgres_conn_id=CONN_ID)
     hook.run(f"""
@@ -68,6 +80,8 @@ def extract_and_load():
     hook = PostgresHook(postgres_conn_id=CONN_ID)
     conn = hook.get_conn()
     cur = conn.cursor()
+
+    configure_csv_field_limit()
 
     insert_sql = f"""
         INSERT INTO {TABLE} (
