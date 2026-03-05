@@ -52,11 +52,15 @@ Examples:
 - Override specific tables with custom thresholds:
     - `scripts/validate_dag_outputs.sh --table mart_titles_enriched:1000 --table title_ratings:5000`
 
-Default checks include both mart tables plus the new per-movie credits mart:
+Default checks include mart tables:
 
 - `mart_titles_enriched`
 - `mart_director_credits`
 - `mart_movie_credits`
+- `mart_episode_credits`
+- `mart_series_people_rollup`
+- `mart_episode_enriched`
+- `mart_series_akas`
 
 Default checks also include IMDb staging tables:
 

@@ -8,3 +8,5 @@ TITLE_PRINCIPALS_DATASET = Dataset("imdb://postgres_movies/public/title_principa
 TITLE_RATINGS_DATASET = Dataset("imdb://postgres_movies/public/title_ratings")
 TITLE_AKAS_DATASET = Dataset("imdb://postgres_movies/public/title_akas")
 TITLE_EPISODE_DATASET = Dataset("imdb://postgres_movies/public/title_episode")
+MART_EPISODE_CREDITS_DATASET = Dataset("imdb://postgres_movies/public/mart_episode_credits")
+MART_EPISODE_ENRICHED_DATASET = Dataset("imdb://postgres_movies/public/mart_episode_enriched")

@@ -22,6 +22,10 @@ declare -a DEFAULT_TABLES=(
   "mart_titles_enriched"
   "mart_director_credits"
   "mart_movie_credits"
+  "mart_episode_credits"
+  "mart_series_people_rollup"
+  "mart_episode_enriched"
+  "mart_series_akas"
 )
 
 usage() {

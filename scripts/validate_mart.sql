@@ -25,6 +25,38 @@ FROM (
         COUNT(*)::bigint AS row_count,
         MAX(last_refreshed_at) AS last_refreshed_at
     FROM mart_director_credits
+
+    UNION ALL
+
+    SELECT
+        'mart_episode_credits' AS mart_name,
+        COUNT(*)::bigint AS row_count,
+        MAX(last_refreshed_at) AS last_refreshed_at
+    FROM mart_episode_credits
+
+    UNION ALL
+
+    SELECT
+        'mart_series_people_rollup' AS mart_name,
+        COUNT(*)::bigint AS row_count,
+        MAX(last_refreshed_at) AS last_refreshed_at
+    FROM mart_series_people_rollup
+
+    UNION ALL
+
+    SELECT
+        'mart_episode_enriched' AS mart_name,
+        COUNT(*)::bigint AS row_count,
+        MAX(last_refreshed_at) AS last_refreshed_at
+    FROM mart_episode_enriched
+
+    UNION ALL
+
+    SELECT
+        'mart_series_akas' AS mart_name,
+        COUNT(*)::bigint AS row_count,
+        MAX(last_refreshed_at) AS last_refreshed_at
+    FROM mart_series_akas
 ) s
 ORDER BY mart_name;
 
@@ -127,3 +159,129 @@ FROM mart_director_credits
 GROUP BY director_nconst
 ORDER BY total_votes DESC NULLS LAST
 LIMIT 10;
+
+-- 13. episode_credits: coverage summary
+SELECT
+    COUNT(*) AS total_credit_rows,
+    COUNT(DISTINCT series_tconst) AS series_count,
+    COUNT(DISTINCT episode_tconst) AS episode_count,
+    COUNT(DISTINCT person_nconst) AS people_count,
+    COUNT(*) FILTER (WHERE average_rating IS NOT NULL) AS rows_with_rating
+FROM mart_episode_credits;
+
+-- 14. episode_credits: credit type distribution
+SELECT
+    credit_type,
+    COUNT(*) AS cnt
+FROM mart_episode_credits
+GROUP BY credit_type
+ORDER BY cnt DESC, credit_type;
+
+-- 15. episode_credits: top contributors by episode coverage
+SELECT
+    person_name,
+    credit_type,
+    COUNT(DISTINCT episode_tconst) AS episode_count,
+    COUNT(DISTINCT series_tconst) AS series_count
+FROM mart_episode_credits
+GROUP BY person_name, credit_type
+ORDER BY episode_count DESC, series_count DESC
+LIMIT 15;
+
+-- 16. series_people_rollup: quality and coverage summary
+SELECT
+    COUNT(*) AS total_rollup_rows,
+    COUNT(DISTINCT series_tconst) AS series_count,
+    COUNT(DISTINCT person_nconst) AS people_count,
+    ROUND(AVG(episode_count)::numeric, 2) AS avg_episode_coverage,
+    ROUND(AVG(avg_episode_rating)::numeric, 2) AS avg_episode_rating
+FROM mart_series_people_rollup;
+
+-- 17. series_people_rollup: top people by episode coverage
+SELECT
+    series_title,
+    person_name,
+    credit_type,
+    episode_count,
+    season_count,
+    avg_episode_rating,
+    total_episode_votes
+FROM mart_series_people_rollup
+ORDER BY episode_count DESC, total_episode_votes DESC NULLS LAST
+LIMIT 15;
+
+-- 18. episode_enriched: coverage summary
+SELECT
+    COUNT(*) AS total_episodes,
+    COUNT(*) FILTER (WHERE average_rating IS NOT NULL) AS episodes_with_rating,
+    ROUND(AVG(average_rating)::numeric, 2) AS avg_rating,
+    SUM(episode_aka_count)::bigint AS total_episode_aka_rows
+FROM mart_episode_enriched;
+
+-- 19. episode_enriched: top episodes by votes
+SELECT
+    series_title,
+    season_number,
+    episode_number,
+    episode_title,
+    average_rating,
+    num_votes,
+    episode_aka_count
+FROM mart_episode_enriched
+ORDER BY num_votes DESC NULLS LAST, average_rating DESC NULLS LAST
+LIMIT 15;
+
+-- 20. series_akas: localization coverage summary
+SELECT
+    COUNT(*) AS total_rows,
+    COUNT(DISTINCT episode_tconst) AS localized_episodes,
+    COUNT(DISTINCT region) AS region_count,
+    COUNT(DISTINCT language) AS language_count,
+    SUM(aka_count)::bigint AS total_aka_count
+FROM mart_series_akas;
+
+-- 21. series_akas: top region/language combinations by AKA volume
+SELECT
+    region,
+    language,
+    SUM(aka_count)::bigint AS aka_count
+FROM mart_series_akas
+GROUP BY region, language
+ORDER BY aka_count DESC, region, language
+LIMIT 15;
+
+-- 22. LOST analytics: episode and contributor coverage
+SELECT
+    COUNT(DISTINCT episode_tconst) AS lost_episode_count,
+    COUNT(DISTINCT person_nconst) AS lost_people_count,
+    COUNT(*) AS lost_credit_rows
+FROM mart_episode_credits
+WHERE lower(series_title) = 'lost';
+
+-- 23. LOST analytics: top contributors by episode_count
+SELECT
+    person_name,
+    credit_type,
+    episode_count,
+    season_count,
+    avg_episode_rating,
+    total_episode_votes
+FROM mart_series_people_rollup
+WHERE lower(series_title) = 'lost'
+ORDER BY episode_count DESC, total_episode_votes DESC NULLS LAST
+LIMIT 20;
+
+-- 24. LOST analytics: top episodes by votes and rating
+SELECT
+    season_number,
+    episode_number,
+    episode_title,
+    average_rating,
+    num_votes,
+    episode_aka_count,
+    episode_regions,
+    episode_languages
+FROM mart_episode_enriched
+WHERE lower(series_title) = 'lost'
+ORDER BY num_votes DESC NULLS LAST, average_rating DESC NULLS LAST
+LIMIT 20;
