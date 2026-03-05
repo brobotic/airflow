@@ -1,5 +1,7 @@
+import pytest
+
 from dags import airflow_datasets
-from dags import dag_etl_principals as module
+from dags import dag_etl_episode as module
 
 
 class FakeCursor:
@@ -56,13 +58,11 @@ class FakeHookVerify:
 
     def get_first(self, sql):
         self.get_first_calls.append(sql)
-        if "cinematographer" in sql or "director of photography" in sql:
-            return (1,)
         return (2,)
 
     def get_records(self, sql):
         self.get_records_calls.append(sql)
-        return [("tt1", 1, "nm1", "cinematographer", "director of photography")]
+        return [("tt1", "ttParent", 1, 1)]
 
 
 def test_clean_value():
@@ -71,12 +71,19 @@ def test_clean_value():
     assert module.clean_value("hello") == "hello"
 
 
-def test_to_int_or_none():
-    """Check integer parsing behavior for valid and invalid values."""
-    assert module.to_int_or_none("7") == 7
-    assert module.to_int_or_none(r"\N") is None
-    assert module.to_int_or_none("") is None
-    assert module.to_int_or_none("abc") is None
+@pytest.mark.parametrize(
+    "value, expected",
+    [
+        (None, None),
+        ("", None),
+        (r"\N", None),
+        (" 42 ", 42),
+        ("abc", None),
+    ],
+)
+def test_to_int_or_none(value, expected):
+    """Verify integer parsing handles blanks, null markers, valid ints, and invalid strings."""
+    assert module.to_int_or_none(value) == expected
 
 
 def test_create_table_calls_hook_run(monkeypatch):
@@ -100,11 +107,12 @@ def test_create_table_calls_hook_run(monkeypatch):
 
 def test_extract_and_load_transforms_and_upserts(monkeypatch, tmp_path):
     """Validate TSV rows are transformed and upserted with expected values."""
-    tsv_content = "\t".join(["tconst", "ordering", "nconst", "category", "job", "characters"]) + "\n"
-    tsv_content += "\t".join(["tt0001", "1", "nm0001", "director", r"\N", r"\N"]) + "\n"
-    tsv_content += "\t".join(["tt0001", "2", "nm0002", "cinematographer", "director of photography", r"\N"]) + "\n"
+    tsv_content = "\t".join(["tconst", "parentTconst", "seasonNumber", "episodeNumber"]) + "\n"
+    tsv_content += "\t".join(["tt0001", "ttP1", "1", "2"]) + "\n"
+    tsv_content += "\t".join(["tt0002", "ttP2", r"\N", r"\N"]) + "\n"
+    tsv_content += "\t".join(["tt0003", "ttP3", "A", "3"]) + "\n"
 
-    tsv_file = tmp_path / "title.principals.tsv"
+    tsv_file = tmp_path / "title.episode.tsv"
     tsv_file.write_text(tsv_content, encoding="utf-8")
 
     created = {}
@@ -131,14 +139,15 @@ def test_extract_and_load_transforms_and_upserts(monkeypatch, tmp_path):
     sql, rows = cursor.executemany_calls[0]
 
     assert f"INSERT INTO {module.TABLE}" in sql
-    assert "ON CONFLICT (tconst, ordering) DO NOTHING" in sql
-    assert len(rows) == 2
-    assert rows[0] == ("tt0001", 1, "nm0001", "director", None, None)
-    assert rows[1] == ("tt0001", 2, "nm0002", "cinematographer", "director of photography", None)
+    assert "ON CONFLICT (tconst) DO NOTHING" in sql
+    assert len(rows) == 3
+    assert rows[0] == ("tt0001", "ttP1", 1, 2)
+    assert rows[1] == ("tt0002", "ttP2", None, None)
+    assert rows[2] == ("tt0003", "ttP3", None, 3)
 
 
 def test_verify_load_uses_queries(monkeypatch):
-    """Confirm verification step runs expected count and sample queries."""
+    """Confirm verification step runs count and sample queries against the target table."""
     created = {}
 
     def fake_hook_ctor(postgres_conn_id):
@@ -148,25 +157,20 @@ def test_verify_load_uses_queries(monkeypatch):
 
     monkeypatch.setattr(module, "PostgresHook", fake_hook_ctor)
 
-    result = module.verify_load()
+    module.verify_load()
 
     hook = created["hook"]
     assert hook.postgres_conn_id == module.CONN_ID
-    assert len(hook.get_first_calls) == 2
+    assert len(hook.get_first_calls) == 1
     assert f"SELECT COUNT(*) FROM {module.TABLE}" in hook.get_first_calls[0]
-    assert "cinematographer" in hook.get_first_calls[1]
     assert len(hook.get_records_calls) == 1
     assert f"FROM {module.TABLE} LIMIT 5" in hook.get_records_calls[0]
-
-    assert result["row_count"] == 2
-    assert result["sample_count"] == 1
-    assert result["dop_signal_count"] == 1
 
 
 def test_dag_task_chain():
     """Assert DAG wiring enforces create_table -> extract_and_load -> verify_load order."""
     dag = module.dag
-    assert dag.dag_id == "movies_principals_etl"
+    assert dag.dag_id == "movies_episode_etl"
 
     create_task = dag.get_task("create_table")
     extract_task = dag.get_task("extract_and_load")
@@ -176,15 +180,8 @@ def test_dag_task_chain():
     assert verify_task.task_id in extract_task.downstream_task_ids
 
 
-def test_failure_callback_exists():
-    """Ensure DAG failure callback is configured."""
-    dag = module.dag
-    assert "on_failure_callback" in dag.default_args
-    assert callable(dag.default_args["on_failure_callback"])
-
-
-def test_extract_task_publishes_title_principals_dataset():
-    """Ensure extract_and_load publishes the title_principals dataset event."""
+def test_extract_task_publishes_title_episode_dataset():
+    """Ensure extract_and_load publishes the title_episode dataset event."""
     extract_task = module.dag.get_task("extract_and_load")
     outlet_uris = {dataset.uri for dataset in extract_task.outlets}
-    assert airflow_datasets.TITLE_PRINCIPALS_DATASET.uri in outlet_uris
+    assert airflow_datasets.TITLE_EPISODE_DATASET.uri in outlet_uris

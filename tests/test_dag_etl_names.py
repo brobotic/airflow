@@ -154,7 +154,7 @@ def test_extract_and_load_transforms_and_upserts(monkeypatch, tmp_path):
     sql, rows = cursor.executemany_calls[0]
 
     assert f"INSERT INTO {module.TABLE}" in sql
-    assert "ON CONFLICT (nconst) DO UPDATE" in sql
+    assert "ON CONFLICT (nconst) DO NOTHING" in sql
     assert len(rows) == 3
     assert rows[0] == (
         "nm0001",

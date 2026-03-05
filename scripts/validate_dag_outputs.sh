@@ -13,8 +13,10 @@ DEFAULT_MIN_ROWS=1
 
 declare -a DEFAULT_TABLES=(
   "title_basics"
+  "title_akas"
   "name_basics"
   "title_crew"
+  "title_episode"
   "title_principals"
   "title_ratings"
   "mart_titles_enriched"

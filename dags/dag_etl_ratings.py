@@ -69,9 +69,7 @@ def extract_and_load():
     insert_sql = f"""
         INSERT INTO {TABLE} (tconst, average_rating, num_votes)
         VALUES (%s, %s, %s)
-        ON CONFLICT (tconst) DO UPDATE SET
-          average_rating = EXCLUDED.average_rating,
-          num_votes = EXCLUDED.num_votes;
+        ON CONFLICT (tconst) DO NOTHING;
     """
 
     batch = []

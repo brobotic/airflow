@@ -7,17 +7,17 @@ from airflow import DAG
 from airflow.providers.postgres.hooks.postgres import PostgresHook
 
 try:
-    from airflow_datasets import NAME_BASICS_DATASET
+    from airflow_datasets import TITLE_AKAS_DATASET
     from etl_tasks import create_standard_etl_tasks
     from notifications import notify_discord_failure
 except ModuleNotFoundError:
-    from dags.airflow_datasets import NAME_BASICS_DATASET
+    from dags.airflow_datasets import TITLE_AKAS_DATASET
     from dags.etl_tasks import create_standard_etl_tasks
     from dags.notifications import notify_discord_failure
 
-TSV_PATH = "/opt/airflow/datasets/name.basics.tsv"
+TSV_PATH = "/opt/airflow/datasets/title.akas.tsv"
 CONN_ID = "postgres_movies"
-TABLE = "name_basics"
+TABLE = "title_akas"
 
 
 def clean_value(value: str):
@@ -34,16 +34,31 @@ def to_int_or_none(value):
     return int(value) if value.isdigit() else None
 
 
+def to_bool_or_none(value):
+    value = clean_value(value)
+    if value is None:
+        return None
+    value = str(value).strip()
+    if value == "":
+        return None
+    if value in {"0", "1"}:
+        return bool(int(value))
+    return None
+
+
 def create_table():
     hook = PostgresHook(postgres_conn_id=CONN_ID)
     hook.run(f"""
         CREATE TABLE IF NOT EXISTS {TABLE} (
-            nconst              VARCHAR(20) PRIMARY KEY,
-            primary_name        TEXT,
-            birth_year          INTEGER,
-            death_year          INTEGER,
-            primary_profession  TEXT,
-            known_for_titles    TEXT
+            title_id            VARCHAR(20) NOT NULL,
+            ordering            INTEGER NOT NULL,
+            title               TEXT,
+            region              VARCHAR(10),
+            language            VARCHAR(10),
+            types               TEXT,
+            attributes          TEXT,
+            is_original_title   BOOLEAN,
+            PRIMARY KEY (title_id, ordering)
         );
     """)
     logging.info("Table '%s' is ready.", TABLE)
@@ -56,51 +71,60 @@ def extract_and_load():
 
     insert_sql = f"""
         INSERT INTO {TABLE} (
-            nconst, primary_name, birth_year, death_year,
-            primary_profession, known_for_titles
+            title_id, ordering, title, region, language,
+            types, attributes, is_original_title
         )
-        VALUES (%s, %s, %s, %s, %s, %s)
-        ON CONFLICT (nconst) DO NOTHING;
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+        ON CONFLICT (title_id, ordering) DO NOTHING;
     """
 
     batch = []
     batch_size = 50_000
     total = 0
 
-    logging.info("Using names dataset: %s", TSV_PATH)
+    logging.info("Using akas dataset: %s", TSV_PATH)
 
     with open(TSV_PATH, "r", encoding="utf-8", newline="") as f:
         reader = csv.DictReader(f, delimiter="\t")
         logging.info("Detected headers: %s", reader.fieldnames)
 
         required = {
-            "nconst",
-            "primaryName",
-            "birthYear",
-            "deathYear",
-            "primaryProfession",
-            "knownForTitles",
+            "titleId",
+            "ordering",
+            "title",
+            "region",
+            "language",
+            "types",
+            "attributes",
+            "isOriginalTitle",
         }
         missing = required - set(reader.fieldnames or [])
         if missing:
             raise ValueError(f"Missing expected columns: {missing}. Got: {reader.fieldnames}")
 
         for row in reader:
-            nconst = clean_value(row["nconst"])
-            primary_name = clean_value(row["primaryName"])
-            birth_year = to_int_or_none(row["birthYear"])
-            death_year = to_int_or_none(row["deathYear"])
-            primary_profession = clean_value(row["primaryProfession"])
-            known_for_titles = clean_value(row["knownForTitles"])
+            title_id = clean_value(row["titleId"])
+            ordering = to_int_or_none(row["ordering"])
+            title = clean_value(row["title"])
+            region = clean_value(row["region"])
+            language = clean_value(row["language"])
+            types = clean_value(row["types"])
+            attributes = clean_value(row["attributes"])
+            is_original_title = to_bool_or_none(row["isOriginalTitle"])
+
+            if title_id is None or ordering is None:
+                continue
 
             batch.append(
                 (
-                    nconst,
-                    primary_name,
-                    birth_year,
-                    death_year,
-                    primary_profession,
-                    known_for_titles,
+                    title_id,
+                    ordering,
+                    title,
+                    region,
+                    language,
+                    types,
+                    attributes,
+                    is_original_title,
                 )
             )
 
@@ -118,14 +142,14 @@ def extract_and_load():
 
     cur.close()
     conn.close()
-    logging.info("✅ Names ingest complete — %d total rows upserted.", total)
+    logging.info("✅ Akas ingest complete — %d total rows upserted.", total)
 
 
 def verify_load():
     hook = PostgresHook(postgres_conn_id=CONN_ID)
     count = hook.get_first(f"SELECT COUNT(*) FROM {TABLE};")[0]
     sample = hook.get_records(
-        f"SELECT nconst, primary_name, birth_year, primary_profession "
+        f"SELECT title_id, ordering, title, region, language "
         f"FROM {TABLE} LIMIT 5;"
     )
     logging.info("Row count: %d", count)
@@ -139,24 +163,24 @@ def verify_load():
 
 
 with DAG(
-    dag_id="movies_names_etl",
-    description="ETL: Load name.basics.tsv into PostgreSQL",
+    dag_id="movies_akas_etl",
+    description="ETL: Load title.akas.tsv into PostgreSQL",
     default_args={
         "on_failure_callback": partial(
             notify_discord_failure,
-            title="❌ movies_names_etl task failed",
+            title="❌ movies_akas_etl task failed",
         )
     },
     start_date=datetime(2025, 1, 1),
     schedule="@once",
     catchup=False,
-    tags=["movies", "etl", "names"],
+    tags=["movies", "etl", "akas"],
 ) as dag:
     create_standard_etl_tasks(
         create_table_callable=create_table,
         extract_and_load_callable=extract_and_load,
         verify_load_callable=verify_load,
         table=TABLE,
-        success_title="✅ movies_names_etl completed",
-        extract_outlets=[NAME_BASICS_DATASET],
+        success_title="✅ movies_akas_etl completed",
+        extract_outlets=[TITLE_AKAS_DATASET],
     )

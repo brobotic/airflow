@@ -58,6 +58,16 @@ Default checks include both mart tables plus the new per-movie credits mart:
 - `mart_director_credits`
 - `mart_movie_credits`
 
+Default checks also include IMDb staging tables:
+
+- `title_basics`
+- `title_akas`
+- `name_basics`
+- `title_crew`
+- `title_episode`
+- `title_principals`
+- `title_ratings`
+
 The script exits with code `0` when all checks pass, and non-zero when any table is missing or below threshold.
 
 ## Link movies to directors

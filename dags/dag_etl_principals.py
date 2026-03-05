@@ -60,11 +60,7 @@ def extract_and_load():
     insert_sql = f"""
         INSERT INTO {TABLE} (tconst, ordering, nconst, category, job, characters)
         VALUES (%s, %s, %s, %s, %s, %s)
-        ON CONFLICT (tconst, ordering) DO UPDATE SET
-          nconst = EXCLUDED.nconst,
-          category = EXCLUDED.category,
-          job = EXCLUDED.job,
-          characters = EXCLUDED.characters;
+        ON CONFLICT (tconst, ordering) DO NOTHING;
     """
 
     batch = []
