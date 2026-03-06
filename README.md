@@ -2,7 +2,7 @@
 
 # TODO
 
-* postgres exporter
+* idk!s
 
 ## Authoring new ETL DAGs
 
