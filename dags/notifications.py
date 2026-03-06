@@ -1,4 +1,3 @@
-import json
 import logging
 import os
 from datetime import datetime
@@ -21,20 +20,43 @@ def get_environment_name():
     return os.environ.get("ENVIRONMENT") or os.environ.get("ENV") or "unknown"
 
 
-def post_discord_embed(title: str, data: dict, color: int, footer_text: str):
+def post_discord_embed(title: str, data: dict, color: int, footer_text: str | None = None):
     webhook_url = get_discord_webhook_url()
     if not webhook_url:
         logging.info("No Discord webhook configured. Set DISCORD_WEBHOOK_URL or Airflow Variable 'DISCORD_WEBHOOK_URL'.")
         return
 
-    json_block = json.dumps(data, indent=2, default=str)
+    display_data = {}
+    for key, value in data.items():
+        if key in {"log_url", "status", "dag_id"}:
+            continue
+        if key == "table" and str(data.get("status") or "").strip().lower() == "completed":
+            continue
+        if key == "env" and str(value).strip().lower() == "local":
+            continue
+        display_data[key] = value
+    fields = []
+    for key, value in display_data.items():
+        field_value = "null" if value is None else str(value)
+        fields.append(
+            {
+                "name": key,
+                "value": field_value[:1024] if field_value else "-",
+                "inline": False,
+            }
+        )
+
     embed = {
         "title": title,
-        "description": f"```json\n{json_block}\n```",
         "color": color,
         "timestamp": datetime.utcnow().isoformat() + "Z",
-        "footer": {"text": footer_text},
+        "fields": fields[:25],
     }
+    if footer_text:
+        embed["footer"] = {"text": footer_text}
+    log_url = data.get("log_url")
+    if isinstance(log_url, str) and log_url:
+        embed["url"] = log_url
     payload = {"embeds": [embed]}
 
     try:
@@ -49,7 +71,6 @@ def notify_discord_failure(context, title: str = "❌ Airflow task failed"):
     task_instance = context.get("task_instance")
     dag = context.get("dag")
     dag_id = dag.dag_id if dag else "unknown"
-    environment = get_environment_name()
     task_id = task_instance.task_id if task_instance else "unknown"
     run_id = context.get("run_id", "unknown")
     exception = context.get("exception")
@@ -63,8 +84,8 @@ def notify_discord_failure(context, title: str = "❌ Airflow task failed"):
         "error": str(exception),
         "log_url": log_url,
     }
-    footer_text = f"dag: {dag_id} • env: {environment}"
-    post_discord_embed(title, data, DISCORD_COLOR_FAILURE, footer_text)
+    notification_title = title.replace("Airflow task failed", dag_id)
+    post_discord_embed(notification_title, data, DISCORD_COLOR_FAILURE)
 
 
 def notify_discord_success(
@@ -76,7 +97,6 @@ def notify_discord_success(
     result = context["ti"].xcom_pull(task_ids=verify_task_id) or {}
     dag = context.get("dag")
     dag_id = dag.dag_id if dag else "unknown"
-    environment = get_environment_name()
     row_count = result.get("row_count", "unknown")
     sample_count = result.get("sample_count", 0)
     run_id = context.get("run_id", "unknown")
@@ -88,6 +108,6 @@ def notify_discord_success(
         "sample_rows_logged": sample_count,
         "run_id": run_id,
     }
-    footer_text = f"dag: {dag_id} • env: {environment}"
-    post_discord_embed(title, data, DISCORD_COLOR_SUCCESS, footer_text)
+    notification_title = f"✅ {table}" if table else title
+    post_discord_embed(notification_title, data, DISCORD_COLOR_SUCCESS)
 
