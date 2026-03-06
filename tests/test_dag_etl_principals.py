@@ -65,10 +65,10 @@ class FakeHookVerify:
         return [("tt1", 1, "nm1", "cinematographer", "director of photography")]
 
 
-def test_clean_value():
+def test_normalize_imdb_null():
     """Ensure raw IMDb null marker is normalized while regular strings are preserved."""
-    assert module.clean_value(r"\N") is None
-    assert module.clean_value("hello") == "hello"
+    assert module.normalize_imdb_null(r"\N") is None
+    assert module.normalize_imdb_null("hello") == "hello"
 
 
 def test_to_int_or_none():

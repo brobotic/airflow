@@ -1,6 +1,5 @@
 import csv
 import logging
-import sys
 from datetime import datetime
 from functools import partial
 
@@ -9,31 +8,24 @@ from airflow.providers.postgres.hooks.postgres import PostgresHook
 
 try:
     from airflow_datasets import TITLE_CREW_DATASET
+    from etl_helpers import (
+        configure_csv_field_limit,
+        normalize_imdb_null,
+    )
     from etl_tasks import create_standard_etl_tasks
     from notifications import notify_discord_failure
 except ModuleNotFoundError:
     from dags.airflow_datasets import TITLE_CREW_DATASET
+    from dags.etl_helpers import (
+        configure_csv_field_limit,
+        normalize_imdb_null,
+    )
     from dags.etl_tasks import create_standard_etl_tasks
     from dags.notifications import notify_discord_failure
 
 TSV_PATH = "/opt/airflow/datasets/title.crew.tsv"
 CONN_ID = "postgres_movies"
 TABLE = "title_crew"
-
-
-def clean_value(value: str):
-    return None if value == r"\N" else value
-
-
-def configure_csv_field_limit():
-    limit = sys.maxsize
-    while True:
-        try:
-            csv.field_size_limit(limit)
-            logging.info("Configured CSV field size limit to %d", limit)
-            return
-        except OverflowError:
-            limit = int(limit / 10)
 
 
 def create_table():
@@ -77,9 +69,9 @@ def extract_and_load():
             raise ValueError(f"Missing expected columns: {missing}. Got: {reader.fieldnames}")
 
         for row in reader:
-            tconst = clean_value(row["tconst"])
-            directors = clean_value(row["directors"])
-            writers = clean_value(row["writers"])
+            tconst = normalize_imdb_null(row["tconst"])
+            directors = normalize_imdb_null(row["directors"])
+            writers = normalize_imdb_null(row["writers"])
 
             batch.append((tconst, directors, writers))
 

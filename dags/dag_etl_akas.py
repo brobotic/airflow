@@ -1,6 +1,5 @@
 import csv
 import logging
-import sys
 from datetime import datetime
 from functools import partial
 
@@ -9,53 +8,28 @@ from airflow.providers.postgres.hooks.postgres import PostgresHook
 
 try:
     from airflow_datasets import TITLE_AKAS_DATASET
+    from etl_helpers import (
+        configure_csv_field_limit,
+        normalize_imdb_null,
+        to_bool_or_none,
+        to_int_or_none,
+    )
     from etl_tasks import create_standard_etl_tasks
     from notifications import notify_discord_failure
 except ModuleNotFoundError:
     from dags.airflow_datasets import TITLE_AKAS_DATASET
+    from dags.etl_helpers import (
+        configure_csv_field_limit,
+        normalize_imdb_null,
+        to_bool_or_none,
+        to_int_or_none,
+    )
     from dags.etl_tasks import create_standard_etl_tasks
     from dags.notifications import notify_discord_failure
 
 TSV_PATH = "/opt/airflow/datasets/title.akas.tsv"
 CONN_ID = "postgres_movies"
 TABLE = "title_akas"
-
-
-def clean_value(value: str):
-    return None if value == r"\N" else value
-
-
-def to_int_or_none(value):
-    value = clean_value(value)
-    if value is None:
-        return None
-    value = str(value).strip()
-    if value == "":
-        return None
-    return int(value) if value.isdigit() else None
-
-
-def to_bool_or_none(value):
-    value = clean_value(value)
-    if value is None:
-        return None
-    value = str(value).strip()
-    if value == "":
-        return None
-    if value in {"0", "1"}:
-        return bool(int(value))
-    return None
-
-
-def configure_csv_field_limit():
-    limit = sys.maxsize
-    while True:
-        try:
-            csv.field_size_limit(limit)
-            logging.info("Configured CSV field size limit to %d", limit)
-            return
-        except OverflowError:
-            limit = int(limit / 10)
 
 
 def create_table():
@@ -117,13 +91,13 @@ def extract_and_load():
             raise ValueError(f"Missing expected columns: {missing}. Got: {reader.fieldnames}")
 
         for row in reader:
-            title_id = clean_value(row["titleId"])
+            title_id = normalize_imdb_null(row["titleId"])
             ordering = to_int_or_none(row["ordering"])
-            title = clean_value(row["title"])
-            region = clean_value(row["region"])
-            language = clean_value(row["language"])
-            types = clean_value(row["types"])
-            attributes = clean_value(row["attributes"])
+            title = normalize_imdb_null(row["title"])
+            region = normalize_imdb_null(row["region"])
+            language = normalize_imdb_null(row["language"])
+            types = normalize_imdb_null(row["types"])
+            attributes = normalize_imdb_null(row["attributes"])
             is_original_title = to_bool_or_none(row["isOriginalTitle"])
 
             if title_id is None or ordering is None:

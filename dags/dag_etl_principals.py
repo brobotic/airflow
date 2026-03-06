@@ -1,6 +1,5 @@
 import csv
 import logging
-import sys
 from datetime import datetime
 from functools import partial
 
@@ -9,41 +8,26 @@ from airflow.providers.postgres.hooks.postgres import PostgresHook
 
 try:
     from airflow_datasets import TITLE_PRINCIPALS_DATASET
+    from etl_helpers import (
+        configure_csv_field_limit,
+        normalize_imdb_null,
+        to_int_or_none,
+    )
     from etl_tasks import create_standard_etl_tasks
     from notifications import notify_discord_failure
 except ModuleNotFoundError:
     from dags.airflow_datasets import TITLE_PRINCIPALS_DATASET
+    from dags.etl_helpers import (
+        configure_csv_field_limit,
+        normalize_imdb_null,
+        to_int_or_none,
+    )
     from dags.etl_tasks import create_standard_etl_tasks
     from dags.notifications import notify_discord_failure
 
 TSV_PATH = "/opt/airflow/datasets/title.principals.tsv"
 CONN_ID = "postgres_movies"
 TABLE = "title_principals"
-
-
-def clean_value(value: str):
-    return None if value == r"\N" else value
-
-
-def to_int_or_none(value):
-    value = clean_value(value)
-    if value is None:
-        return None
-    value = str(value).strip()
-    if value == "":
-        return None
-    return int(value) if value.isdigit() else None
-
-
-def configure_csv_field_limit():
-    limit = sys.maxsize
-    while True:
-        try:
-            csv.field_size_limit(limit)
-            logging.info("Configured CSV field size limit to %d", limit)
-            return
-        except OverflowError:
-            limit = int(limit / 10)
 
 
 def create_table():
@@ -93,12 +77,12 @@ def extract_and_load():
             raise ValueError(f"Missing expected columns: {missing}. Got: {reader.fieldnames}")
 
         for row in reader:
-            tconst = clean_value(row["tconst"])
+            tconst = normalize_imdb_null(row["tconst"])
             ordering = to_int_or_none(row["ordering"])
-            nconst = clean_value(row["nconst"])
-            category = clean_value(row["category"])
-            job = clean_value(row["job"])
-            characters = clean_value(row["characters"])
+            nconst = normalize_imdb_null(row["nconst"])
+            category = normalize_imdb_null(row["category"])
+            job = normalize_imdb_null(row["job"])
+            characters = normalize_imdb_null(row["characters"])
 
             if tconst is None or ordering is None:
                 continue

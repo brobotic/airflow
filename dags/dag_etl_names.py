@@ -1,6 +1,5 @@
 import csv
 import logging
-import sys
 from datetime import datetime
 from functools import partial
 
@@ -9,41 +8,26 @@ from airflow.providers.postgres.hooks.postgres import PostgresHook
 
 try:
     from airflow_datasets import NAME_BASICS_DATASET
+    from etl_helpers import (
+        configure_csv_field_limit,
+        normalize_imdb_null,
+        to_int_or_none,
+    )
     from etl_tasks import create_standard_etl_tasks
     from notifications import notify_discord_failure
 except ModuleNotFoundError:
     from dags.airflow_datasets import NAME_BASICS_DATASET
+    from dags.etl_helpers import (
+        configure_csv_field_limit,
+        normalize_imdb_null,
+        to_int_or_none,
+    )
     from dags.etl_tasks import create_standard_etl_tasks
     from dags.notifications import notify_discord_failure
 
 TSV_PATH = "/opt/airflow/datasets/name.basics.tsv"
 CONN_ID = "postgres_movies"
 TABLE = "name_basics"
-
-
-def clean_value(value: str):
-    return None if value == r"\N" else value
-
-
-def to_int_or_none(value):
-    value = clean_value(value)
-    if value is None:
-        return None
-    value = str(value).strip()
-    if value == "":
-        return None
-    return int(value) if value.isdigit() else None
-
-
-def configure_csv_field_limit():
-    limit = sys.maxsize
-    while True:
-        try:
-            csv.field_size_limit(limit)
-            logging.info("Configured CSV field size limit to %d", limit)
-            return
-        except OverflowError:
-            limit = int(limit / 10)
 
 
 def create_table():
@@ -100,12 +84,12 @@ def extract_and_load():
             raise ValueError(f"Missing expected columns: {missing}. Got: {reader.fieldnames}")
 
         for row in reader:
-            nconst = clean_value(row["nconst"])
-            primary_name = clean_value(row["primaryName"])
+            nconst = normalize_imdb_null(row["nconst"])
+            primary_name = normalize_imdb_null(row["primaryName"])
             birth_year = to_int_or_none(row["birthYear"])
             death_year = to_int_or_none(row["deathYear"])
-            primary_profession = clean_value(row["primaryProfession"])
-            known_for_titles = clean_value(row["knownForTitles"])
+            primary_profession = normalize_imdb_null(row["primaryProfession"])
+            known_for_titles = normalize_imdb_null(row["knownForTitles"])
 
             batch.append(
                 (

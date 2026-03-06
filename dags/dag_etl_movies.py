@@ -1,6 +1,5 @@
 import csv
 import logging
-import sys
 from datetime import datetime
 from functools import partial
 
@@ -9,10 +8,20 @@ from airflow.providers.postgres.hooks.postgres import PostgresHook
 
 try:
     from airflow_datasets import TITLE_BASICS_DATASET
+    from etl_helpers import (
+        configure_csv_field_limit,
+        normalize_imdb_null,
+        to_int_or_none,
+    )
     from etl_tasks import create_standard_etl_tasks
     from notifications import notify_discord_failure
 except ModuleNotFoundError:
     from dags.airflow_datasets import TITLE_BASICS_DATASET
+    from dags.etl_helpers import (
+        configure_csv_field_limit,
+        normalize_imdb_null,
+        to_int_or_none,
+    )
     from dags.etl_tasks import create_standard_etl_tasks
     from dags.notifications import notify_discord_failure
 
@@ -20,29 +29,6 @@ TSV_PATH = "/opt/airflow/datasets/title.basics.tsv"
 CONN_ID  = "postgres_movies"
 TABLE    = "title_basics"
 
-
-def clean_value(value: str):
-    """Replace IMDb null sentinel with Python None."""
-    return None if value == r"\N" else value
-
-def to_int_or_none(value):
-    if value is None:
-        return None
-    value = str(value).strip()
-    if value == "" or value == r"\N":
-        return None
-    return int(value) if value.isdigit() else None
-
-
-def configure_csv_field_limit():
-    limit = sys.maxsize
-    while True:
-        try:
-            csv.field_size_limit(limit)
-            logging.info("Configured CSV field size limit to %d", limit)
-            return
-        except OverflowError:
-            limit = int(limit / 10)
 
 def create_table():
     """Create the target table if it doesn't already exist."""
@@ -90,17 +76,17 @@ def extract_and_load():
 
         for row in reader:
             # ── Transform ────────────────────────────────────────────────────
-            tconst          = clean_value(row["tconst"])
-            title_type      = clean_value(row["titleType"])
-            primary_title   = clean_value(row["primaryTitle"])
-            original_title  = clean_value(row["originalTitle"])
-            start_year      = to_int_or_none(clean_value(row["startYear"]))
-            end_year        = to_int_or_none(clean_value(row["endYear"]))
-            runtime_minutes = to_int_or_none(clean_value(row["runtimeMinutes"]))
-            genres          = clean_value(row["genres"])
+            tconst          = normalize_imdb_null(row["tconst"])
+            title_type      = normalize_imdb_null(row["titleType"])
+            primary_title   = normalize_imdb_null(row["primaryTitle"])
+            original_title  = normalize_imdb_null(row["originalTitle"])
+            start_year      = to_int_or_none(normalize_imdb_null(row["startYear"]))
+            end_year        = to_int_or_none(normalize_imdb_null(row["endYear"]))
+            runtime_minutes = to_int_or_none(normalize_imdb_null(row["runtimeMinutes"]))
+            genres          = normalize_imdb_null(row["genres"])
 
             # Cast is_adult to bool; treat \N as None
-            raw_adult = clean_value(row["isAdult"])
+            raw_adult = normalize_imdb_null(row["isAdult"])
             is_adult  = bool(int(raw_adult)) if raw_adult is not None else None
 
             # Cast numeric fields
