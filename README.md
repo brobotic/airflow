@@ -2,7 +2,11 @@
 
 # TODO
 
-* idk!s
+* movie recommendation discord bot
+    * add new cog to corvus
+    * pulls random recs from ES based on query movie rec script
+    * corvus sends embed w/ pagination of X recommendations
+    * how to programmatically get movie cover art? the movie db api + my own rec service?
 
 ## Authoring new ETL DAGs
 

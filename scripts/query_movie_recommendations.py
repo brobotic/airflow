@@ -14,7 +14,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "Query Elasticsearch mart_titles_enriched and print random movie "
-            "recommendations where rating_bucket is 'excellent'."
+            "recommendations filtered by rating_bucket."
         )
     )
     parser.add_argument(
@@ -46,6 +46,24 @@ def parse_args() -> argparse.Namespace:
         type=int,
         help="Filter by exact start_year, e.g. 1999",
     )
+    parser.add_argument(
+        "--genre",
+        help="Filter by genre token (non-wildcard), e.g. Comedy",
+    )
+    parser.add_argument(
+        "--rating-bucket",
+        nargs="+",
+        default=["average", "good", "excellent"],
+        help=(
+            "One or more rating buckets to filter by "
+            "(default: average good excellent)"
+        ),
+    )
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Print eligible rating_bucket distribution for current filters",
+    )
     return parser.parse_args()
 
 
@@ -70,9 +88,11 @@ def query_random_excellent_movies(
     min_votes: int,
     era: str | None,
     start_year: int | None,
+    genre: str | None,
+    rating_buckets: list[str],
 ) -> list[dict[str, Any]]:
     filters: list[dict[str, Any]] = [
-        {"term": {"rating_bucket.keyword": "excellent"}},
+        {"terms": {"rating_bucket.keyword": rating_buckets}},
         {"term": {"title_type.keyword": "movie"}},
     ]
 
@@ -82,6 +102,19 @@ def query_random_excellent_movies(
         filters.append({"term": {"era.keyword": era}})
     if start_year is not None:
         filters.append({"term": {"start_year": start_year}})
+    genre_token = (genre or "").strip()
+    if genre_token:
+        filters.append(
+            {
+                "match": {
+                    "genres": {
+                        "query": genre_token,
+                        "operator": "and",
+                        "fuzziness": 0,
+                    }
+                }
+            }
+        )
 
     query = {
         "size": count,
@@ -93,6 +126,7 @@ def query_random_excellent_movies(
             "average_rating",
             "num_votes",
             "genres",
+            "rating_bucket",
         ],
         "query": {
             "function_score": {
@@ -122,12 +156,110 @@ def query_random_excellent_movies(
                 "rating": source.get("average_rating"),
                 "votes": source.get("num_votes"),
                 "genres": source.get("genres") or "",
+                "rating_bucket": source.get("rating_bucket") or "",
                 "director": "",
                 "cinematographer": "",
             }
         )
 
     return rows
+
+
+def get_rating_bucket_distribution(
+    client: Elasticsearch,
+    index: str,
+    min_votes: int,
+    era: str | None,
+    start_year: int | None,
+    genre: str | None,
+) -> dict[str, int]:
+    filters: list[dict[str, Any]] = [{"term": {"title_type.keyword": "movie"}}]
+
+    if min_votes > 0:
+        filters.append({"range": {"num_votes": {"gte": min_votes}}})
+    if era:
+        filters.append({"term": {"era.keyword": era}})
+    if start_year is not None:
+        filters.append({"term": {"start_year": start_year}})
+
+    genre_token = (genre or "").strip()
+    if genre_token:
+        filters.append(
+            {
+                "match": {
+                    "genres": {
+                        "query": genre_token,
+                        "operator": "and",
+                        "fuzziness": 0,
+                    }
+                }
+            }
+        )
+
+    response = client.search(
+        index=index,
+        body={
+            "size": 0,
+            "track_total_hits": False,
+            "query": {
+                "bool": {
+                    "filter": filters,
+                    "must": [{"exists": {"field": "primary_title"}}],
+                }
+            },
+            "aggs": {
+                "rating_buckets": {
+                    "terms": {
+                        "field": "rating_bucket.keyword",
+                        "size": 20,
+                    }
+                }
+            },
+        },
+    )
+
+    buckets = (
+        response.get("aggregations", {})
+        .get("rating_buckets", {})
+        .get("buckets", [])
+    )
+    distribution: dict[str, int] = {}
+    for bucket in buckets:
+        key = bucket.get("key")
+        if not key:
+            continue
+        distribution[str(key)] = int(bucket.get("doc_count", 0))
+
+    return distribution
+
+
+def render_debug_distribution(distribution: dict[str, int], requested_buckets: list[str]) -> None:
+    console = Console()
+    requested_set = {bucket.strip() for bucket in requested_buckets if bucket.strip()}
+
+    total = sum(distribution.values())
+    requested_total = sum(
+        count for bucket, count in distribution.items() if bucket in requested_set
+    )
+
+    console.print("Debug: eligible movie distribution by rating_bucket", style="cyan")
+    table = Table(title="Eligible Counts (before random sampling)")
+    table.add_column("Bucket", style="blue")
+    table.add_column("Count", justify="right")
+    table.add_column("Selected", justify="center")
+
+    for bucket, count in sorted(distribution.items(), key=lambda item: item[0]):
+        table.add_row(bucket, f"{count:,}", "yes" if bucket in requested_set else "")
+
+    if not distribution:
+        console.print("No eligible documents found for current filters.", style="yellow")
+        return
+
+    console.print(table)
+    console.print(
+        f"Total eligible: {total:,} | Selected-bucket eligible: {requested_total:,}",
+        style="cyan",
+    )
 
 
 def enrich_with_movie_credits(
@@ -180,6 +312,7 @@ def render_table(rows: list[dict[str, Any]]) -> None:
     table.add_column("Year", justify="right")
     table.add_column("Director", style="green")
     table.add_column("Cinematographer", style="yellow")
+    table.add_column("Bucket", style="blue")
     table.add_column("Rating", justify="right", style="green")
     table.add_column("Votes", justify="right")
     table.add_column("Genres", style="magenta")
@@ -194,6 +327,7 @@ def render_table(rows: list[dict[str, Any]]) -> None:
             year,
             row["director"],
             row["cinematographer"],
+            row["rating_bucket"],
             rating,
             votes,
             row["genres"],
@@ -202,7 +336,7 @@ def render_table(rows: list[dict[str, Any]]) -> None:
     if not rows:
         console.print(
             "No matching movies found. Check that the index contains documents with "
-            "rating_bucket='excellent' and title_type='movie'.",
+            "the requested rating_bucket and title_type='movie'.",
             style="yellow",
         )
         return
@@ -239,6 +373,20 @@ def main() -> int:
             )
             return 1
 
+        if args.debug:
+            distribution = get_rating_bucket_distribution(
+                client=client,
+                index=index,
+                min_votes=args.min_votes,
+                era=args.era,
+                start_year=args.start_year,
+                genre=args.genre,
+            )
+            render_debug_distribution(
+                distribution=distribution,
+                requested_buckets=args.rating_bucket,
+            )
+
         rows = query_random_excellent_movies(
             client=client,
             index=index,
@@ -247,6 +395,8 @@ def main() -> int:
             min_votes=args.min_votes,
             era=args.era,
             start_year=args.start_year,
+            genre=args.genre,
+            rating_buckets=args.rating_bucket,
         )
         rows = enrich_with_movie_credits(
             client=client,
