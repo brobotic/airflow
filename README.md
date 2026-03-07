@@ -348,3 +348,378 @@ The SQL file now validates all mart DAG outputs:
 - `mart_director_credits`
 
 It includes row-count/freshness checks plus per-mart distribution and top-record sanity queries.
+
+## Kibana visualization recommendations (movies + TV)
+
+Now that mart data is exported to Elasticsearch, build Kibana dashboards from the mart indices.
+
+### Suggested data views (index patterns)
+
+- `mart_titles_enriched`
+- `mart_movie_credits`
+- `mart_director_credits`
+- `mart_episode_enriched`
+- `mart_episode_credits`
+- `mart_series_people_rollup`
+- `mart_series_akas`
+
+Tip: if you exported with a prefix, use wildcard patterns (for example `movies-mart_*`) and create one data view per mart for simpler Lens authoring.
+
+### Dashboard 1: Movie quality and popularity
+
+1. **Ratings bucket by era (stacked bar)**
+    - Index: `mart_titles_enriched`
+    - Filter: `title_type: "movie"`
+    - X-axis: `era`
+    - Break down: `rating_bucket`
+    - Metric: `Count`
+
+2. **Movie releases over time (line)**
+    - Index: `mart_titles_enriched`
+    - Filter: `title_type: "movie"`
+    - X-axis: `start_year` (histogram)
+    - Metric: `Count`
+
+3. **Popularity vs rating (scatter/bubble)**
+    - Index: `mart_titles_enriched`
+    - Filter: `title_type: "movie" and average_rating:* and num_votes:*`
+    - X-axis: `average_rating`
+    - Y-axis: `num_votes`
+    - Break down: `era` (or `title_type` if you want movie vs TV comparison)
+
+4. **Top movies by votes (table)**
+    - Index: `mart_titles_enriched`
+    - Filter: `title_type: "movie"`
+    - Columns: `primary_title`, `start_year`, `average_rating`, `num_votes`, `rating_bucket`
+    - Sort: `num_votes` descending
+
+### Dashboard 2: Movie credits and creator performance
+
+1. **Director productivity leaderboard (horizontal bar)**
+    - Index: `mart_director_credits`
+    - Terms: `director_name`
+    - Metric: `Max(movie_count)`
+    - Sort by metric descending
+
+2. **Director audience reach (horizontal bar)**
+    - Index: `mart_director_credits`
+    - Terms: `director_name`
+    - Metric: `Max(total_votes)`
+
+3. **Director quality vs scale (scatter)**
+    - Index: `mart_director_credits`
+    - X-axis: `avg_rating`
+    - Y-axis: `movie_count`
+    - Bubble size: `total_votes`
+    - Break down: top `director_name`
+
+4. **Director ↔ DoP collaboration matrix (heat map)**
+    - Index: `mart_director_credits`
+    - X-axis terms: `director_name`
+    - Y-axis terms: `dop_name`
+    - Metric: `Max(movie_count)`
+
+5. **Movie credits completeness (donut)**
+    - Index: `mart_movie_credits`
+    - Slice by scripted field or runtime field:
+      - `has_director = directors_nconsts != null`
+      - `has_dop = dop_nconsts != null`
+    - Metric: `Count`
+
+### Dashboard 3: TV episode performance and people analytics
+
+1. **Episode ratings by season (line)**
+    - Index: `mart_episode_enriched`
+    - X-axis: `season_number`
+    - Metric: `Average(average_rating)`
+    - Break down: `series_title` (Top N)
+
+2. **Episode vote momentum by season (line)**
+    - Index: `mart_episode_enriched`
+    - X-axis: `season_number`
+    - Metric: `Sum(num_votes)`
+    - Break down: `series_title` (Top N)
+
+3. **Episode volume by series (bar)**
+    - Index: `mart_episode_enriched`
+    - Terms: `series_title`
+    - Metric: `Count`
+
+4. **Credit type mix for TV episodes (stacked bar or donut)**
+    - Index: `mart_episode_credits`
+    - Bucket: `credit_type`
+    - Metric: `Count`
+    - Optional split: `series_title`
+
+5. **Most recurring people per series (table/bar)**
+    - Index: `mart_series_people_rollup`
+    - Terms: `person_name` (or split by `credit_type`)
+    - Metric: `Max(episode_count)`
+    - Optional filter: one `series_tconst`
+
+6. **People impact (bubble)**
+    - Index: `mart_series_people_rollup`
+    - X-axis: `episode_count`
+    - Y-axis: `avg_episode_rating`
+    - Bubble size: `total_episode_votes`
+    - Break down: `credit_type`
+
+### Dashboard 4: Localization and international footprint
+
+1. **AKA coverage by region (treemap/bar)**
+    - Index: `mart_series_akas`
+    - Terms: `region`
+    - Metric: `Sum(aka_count)`
+
+2. **AKA coverage by language (treemap/bar)**
+    - Index: `mart_series_akas`
+    - Terms: `language`
+    - Metric: `Sum(aka_count)`
+
+3. **Series with broadest localization (table)**
+    - Index: `mart_series_akas`
+    - Group by: `series_title`
+    - Metrics: `Cardinality(region)`, `Cardinality(language)`, `Sum(aka_count)`
+
+### Aggregation notes (important)
+
+- `mart_director_credits` grain is `director + dop` pair, so use `Max(movie_count)` / `Max(total_votes)` for director-level charts (not `Sum`, which can overcount).
+- `mart_episode_credits` grain is `episode + person + credit_type`; for episode-level totals, prefer `Cardinality(episode_tconst)`.
+- `mart_series_people_rollup` is already aggregated; use it for leaderboard and impact visuals instead of recomputing from `mart_episode_credits`.
+
+### Optional first dashboard layout
+
+If you want one starting dashboard quickly, use 8 panels:
+
+1. Ratings bucket by era (`mart_titles_enriched`)
+2. Movie releases over time (`mart_titles_enriched`)
+3. Top movies by votes (`mart_titles_enriched`)
+4. Director productivity (`mart_director_credits`)
+5. Director quality vs scale (`mart_director_credits`)
+6. Episode ratings by season (`mart_episode_enriched`)
+7. Credit type mix (`mart_episode_credits`)
+8. AKA coverage by region (`mart_series_akas`)
+
+### Kibana KQL snippets (copy/paste)
+
+Use these in the Kibana query bar for each visualization.
+
+#### `mart_titles_enriched`
+
+- Movies only:
+    - `title_type : "movie"`
+- TV only:
+    - `title_type : ("tvSeries" or "tvMiniSeries")`
+- Rated titles with sufficient signal:
+    - `average_rating >= 6 and num_votes >= 1000`
+- High-confidence hits:
+    - `average_rating >= 8 and num_votes >= 10000`
+- Recent era cut:
+    - `era : ("2010s" or "2020s+")`
+
+#### `mart_movie_credits`
+
+- Movies with director credits:
+    - `directors_nconsts : *`
+- Movies missing director credits:
+    - `not directors_nconsts : *`
+- Movies with DoP credits:
+    - `dop_nconsts : *`
+- Movies missing DoP credits:
+    - `not dop_nconsts : *`
+- Strongly rated + popular movies:
+    - `average_rating >= 7 and num_votes >= 5000`
+
+#### `mart_director_credits`
+
+- Director rows with known DoP relationship:
+    - `dop_nconst : *`
+- Director rows without DoP relationship:
+    - `not dop_nconst : *`
+- Productive directors:
+    - `movie_count >= 5`
+- Productive and well-rated directors:
+    - `movie_count >= 5 and avg_rating >= 7`
+- Audience-heavy collaborations:
+    - `total_votes >= 100000`
+
+#### `mart_episode_enriched`
+
+- Rated episodes only:
+    - `average_rating : * and num_votes : *`
+- High-performing episodes:
+    - `average_rating >= 8 and num_votes >= 1000`
+- Episodes with broad AKA footprint:
+    - `episode_aka_count >= 5`
+- Seasonal cuts:
+    - `season_number >= 1`
+
+#### `mart_episode_credits`
+
+- Directors only:
+    - `credit_type : "director"`
+- Writers only:
+    - `credit_type : "writer"`
+- Actors/actresses:
+    - `credit_type : ("actor" or "actress")`
+- Crew with job metadata:
+    - `job : *`
+- Episode people on strong episodes:
+    - `average_rating >= 8 and num_votes >= 1000`
+
+#### `mart_series_people_rollup`
+
+- Core recurring contributors:
+    - `episode_count >= 10`
+- Long-running contributors:
+    - `season_count >= 3`
+- High-impact contributors:
+    - `episode_count >= 10 and avg_episode_rating >= 7.5`
+- Director-only rollups:
+    - `credit_type : "director"`
+
+#### `mart_series_akas`
+
+- Known region and language:
+    - `region : * and language : *`
+- Strong localization pockets:
+    - `aka_count >= 3`
+- US English subset:
+    - `region : "US" and language : "en"`
+
+### Lens formula helpers (optional)
+
+Use these as Lens Formula metrics when helpful:
+
+- Director rows with DoP coverage (%):
+    - `count(kql='dop_nconst : *') / count()`
+- Movies with DoP coverage (%):
+    - `count(kql='dop_nconsts : *') / count()`
+- Movies with director coverage (%):
+    - `count(kql='directors_nconsts : *') / count()`
+- High-rated episode share (%):
+    - `count(kql='average_rating >= 8') / count()`
+- Highly localized episode-row share (%):
+    - `count(kql='aka_count >= 3') / count()`
+
+### Suggested dashboard controls (quick wins)
+
+Add these global controls to make the dashboards interactive:
+
+- `series_title` (options list)
+- `credit_type` (options list)
+- `start_year` or `season_number` (range slider)
+- `average_rating` and `num_votes` (range sliders)
+
+### Saved searches to create first (starter checklist)
+
+Create these 8 Discover saved searches first, then build the 8-panel starter dashboard from them.
+
+1. **Movies by era + rating bucket (for stacked bar)**
+    - Data view: `mart_titles_enriched`
+    - KQL: `title_type : "movie"`
+    - Keep fields: `era`, `rating_bucket`, `start_year`, `average_rating`, `num_votes`
+
+2. **Movie release trend seed (for line chart)**
+    - Data view: `mart_titles_enriched`
+    - KQL: `title_type : "movie" and start_year >= 1900`
+    - Keep fields: `start_year`, `primary_title`, `average_rating`, `num_votes`
+
+3. **Top-voted movies seed (for table)**
+    - Data view: `mart_titles_enriched`
+    - KQL: `title_type : "movie" and num_votes : *`
+    - Sort in Discover: `num_votes` descending
+    - Keep fields: `primary_title`, `start_year`, `average_rating`, `num_votes`, `rating_bucket`
+
+4. **Director productivity seed (for horizontal bar)**
+    - Data view: `mart_director_credits`
+    - KQL: `director_name : * and movie_count >= 1`
+    - Keep fields: `director_name`, `movie_count`, `avg_rating`, `total_votes`
+    - Lens metric note: use `Max(movie_count)`
+
+5. **Director quality/scale seed (for scatter)**
+    - Data view: `mart_director_credits`
+    - KQL: `director_name : * and avg_rating : * and total_votes >= 10000`
+    - Keep fields: `director_name`, `movie_count`, `avg_rating`, `total_votes`, `dop_name`
+    - Lens metric note: use `Max(movie_count)` and `Max(total_votes)`
+
+6. **Episode rating trend seed (for line by season)**
+    - Data view: `mart_episode_enriched`
+    - KQL: `average_rating : * and season_number >= 1`
+    - Keep fields: `series_title`, `season_number`, `episode_number`, `average_rating`, `num_votes`
+
+7. **Episode credit mix seed (for donut/stacked bar)**
+    - Data view: `mart_episode_credits`
+    - KQL: `credit_type : *`
+    - Keep fields: `series_title`, `episode_tconst`, `credit_type`, `person_name`
+    - Lens metric note: for episode totals use `Cardinality(episode_tconst)`
+
+8. **Localization by region seed (for treemap/bar)**
+    - Data view: `mart_series_akas`
+    - KQL: `region : * and aka_count >= 1`
+    - Keep fields: `series_title`, `region`, `language`, `aka_count`
+
+Optional naming convention for saved searches:
+
+- `kibana_seed_01_movies_era_bucket`
+- `kibana_seed_02_movies_release_trend`
+- `kibana_seed_03_movies_top_votes`
+- `kibana_seed_04_director_productivity`
+- `kibana_seed_05_director_quality_scale`
+- `kibana_seed_06_episode_rating_trend`
+- `kibana_seed_07_episode_credit_mix`
+- `kibana_seed_08_localization_region`
+
+### Kibana build order (mini-runbook)
+
+Use this order to build the starter dashboard quickly and consistently.
+
+1. Create data views
+    - Stack Management → Data Views → Create one per mart index pattern.
+    - Start with: `mart_titles_enriched`, `mart_director_credits`, `mart_episode_enriched`, `mart_episode_credits`, `mart_series_akas`.
+
+2. Create the 8 Discover saved searches
+    - Open Discover, select the target data view, paste the matching KQL from the checklist above.
+    - Keep only the listed fields, apply sort when noted, and Save each search with the suggested name.
+
+3. Create Lens visualizations from each saved search
+    - Open Lens from each saved search context so filters are inherited.
+    - Configure chart type and metrics as listed in the starter dashboard + aggregation notes.
+    - Save each Lens panel with the same numeric prefix as its seed search.
+
+4. Assemble the dashboard
+    - Dashboard → Create dashboard → Add all 8 saved Lens panels.
+    - Suggested layout:
+      - Row 1: panels 1, 2, 3
+      - Row 2: panels 4, 5
+      - Row 3: panels 6, 7, 8
+
+5. Add global controls
+    - Add controls for `series_title`, `credit_type`, `start_year/season_number`, and `average_rating/num_votes`.
+    - Save as a base dashboard (for example: `movies_tv_starter_v1`).
+
+6. Validate before sharing
+    - Spot-check panel totals against Discover for the same filter.
+    - Re-check director charts use `Max(movie_count)` / `Max(total_votes)` and episode totals use `Cardinality(episode_tconst)` where needed.
+
+### Starter panel spec table (implementation sheet)
+
+Use this as a one-page build sheet for the 8 starter panels.
+
+| # | Panel name | Data view | Chart type | Dimension(s) | Metric(s) | Baseline KQL | Notes |
+|---|---|---|---|---|---|---|---|
+| 1 | Ratings bucket by era | `mart_titles_enriched` | Stacked bar | X: `era`; Breakdown: `rating_bucket` | `Count` | `title_type : "movie"` | Good top-left overview panel |
+| 2 | Movie releases over time | `mart_titles_enriched` | Line | X: `start_year` (histogram) | `Count` | `title_type : "movie" and start_year >= 1900` | Use yearly interval |
+| 3 | Top movies by votes | `mart_titles_enriched` | Table | Rows: `primary_title`, `start_year`, `rating_bucket` | `Max(num_votes)`, `Max(average_rating)` | `title_type : "movie" and num_votes : *` | Sort by `Max(num_votes)` desc |
+| 4 | Director productivity | `mart_director_credits` | Horizontal bar | Terms: `director_name` | `Max(movie_count)` | `director_name : * and movie_count >= 1` | Do not use `Sum(movie_count)` |
+| 5 | Director quality vs scale | `mart_director_credits` | Scatter/Bubble | X: `avg_rating`; Y: `movie_count`; Breakdown: `director_name` | Bubble size: `Max(total_votes)` | `director_name : * and avg_rating : * and total_votes >= 10000` | Use `Max(movie_count)` and `Max(total_votes)` |
+| 6 | Episode ratings by season | `mart_episode_enriched` | Line | X: `season_number`; Breakdown: `series_title` (Top N) | `Average(average_rating)` | `average_rating : * and season_number >= 1` | Limit Top N series for readability |
+| 7 | Credit type mix | `mart_episode_credits` | Donut or stacked bar | Bucket: `credit_type`; Optional split: `series_title` | `Count` or `Cardinality(episode_tconst)` | `credit_type : *` | Prefer `Cardinality(episode_tconst)` for episode-level totals |
+| 8 | AKA coverage by region | `mart_series_akas` | Treemap or bar | Terms: `region` | `Sum(aka_count)` | `region : * and aka_count >= 1` | Pair with language panel when expanding |
+
+Quick metric defaults:
+
+- Use `Count` for raw row-volume panels.
+- Use `Average(...)` for score/quality panels.
+- Use `Max(...)` for `mart_director_credits` rollups.
+- Use `Cardinality(episode_tconst)` when counting distinct episodes from `mart_episode_credits`.
