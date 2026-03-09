@@ -78,6 +78,52 @@ Default checks also include IMDb staging tables:
 
 The script exits with code `0` when all checks pass, and non-zero when any table is missing or below threshold.
 
+## Letterboxd diary pipeline
+
+Current Letterboxd scope is intentionally minimal: only `diary.csv`.
+
+### DAGs
+
+- ETL DAG: `letterboxd_diary_etl` → loads into `letterboxd_diary`
+- Mart DAG: `mart_letterboxd_diary` → builds rollups in `mart_letterboxd_diary`
+- Trigger wiring: `mart_letterboxd_diary` runs from `LETTERBOXD_DIARY_DATASET`
+
+### Run DAG tasks manually
+
+```bash
+docker compose -f airflow.yaml exec airflow-scheduler \
+    airflow tasks test letterboxd_diary_etl create_table 2026-03-08
+
+docker compose -f airflow.yaml exec airflow-scheduler \
+    airflow tasks test letterboxd_diary_etl extract_and_load 2026-03-08
+
+docker compose -f airflow.yaml exec airflow-scheduler \
+    airflow tasks test mart_letterboxd_diary extract_and_load 2026-03-08
+```
+
+### Query helper script
+
+Use `scripts/query_letterboxd_diary_mart.py` for ready-made analytics queries.
+
+Examples:
+
+```bash
+python scripts/query_letterboxd_diary_mart.py --query overview
+python scripts/query_letterboxd_diary_mart.py --query monthly --limit 12
+python scripts/query_letterboxd_diary_mart.py --query top-tags --limit 20
+python scripts/query_letterboxd_diary_mart.py --query rewatch-months --limit 12
+python scripts/query_letterboxd_diary_mart.py --query recent-entries --limit 25
+```
+
+Available `--query` values:
+
+- `overview`
+- `monthly`
+- `top-tags`
+- `top-film-years`
+- `rewatch-months`
+- `recent-entries`
+
 ## Link movies to directors
 
 Linking movies to directors:

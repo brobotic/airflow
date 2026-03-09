@@ -1,0 +1,176 @@
+import pytest
+
+from dags import airflow_datasets
+from dags import dag_etl_letterboxd_diary as module
+
+
+class FakeCursor:
+    def __init__(self):
+        self.executemany_calls = []
+        self.execute_calls = []
+        self.closed = False
+
+    def execute(self, sql):
+        self.execute_calls.append(sql)
+
+    def executemany(self, sql, params):
+        self.executemany_calls.append((sql, params))
+
+    def close(self):
+        self.closed = True
+
+
+class FakeConn:
+    def __init__(self):
+        self.cursor_obj = FakeCursor()
+        self.commit_count = 0
+        self.closed = False
+
+    def cursor(self):
+        return self.cursor_obj
+
+    def commit(self):
+        self.commit_count += 1
+
+    def close(self):
+        self.closed = True
+
+
+class FakeHookWithConn:
+    def __init__(self, postgres_conn_id):
+        self.postgres_conn_id = postgres_conn_id
+        self.conn = FakeConn()
+
+    def get_conn(self):
+        return self.conn
+
+
+class FakeHookCreate:
+    def __init__(self, postgres_conn_id):
+        self.postgres_conn_id = postgres_conn_id
+        self.run_calls = []
+
+    def run(self, sql):
+        self.run_calls.append(sql)
+
+
+class FakeHookVerify:
+    def __init__(self, postgres_conn_id):
+        self.postgres_conn_id = postgres_conn_id
+        self.get_first_calls = []
+        self.get_records_calls = []
+
+    def get_first(self, sql):
+        self.get_first_calls.append(sql)
+        return (2,)
+
+    def get_records(self, sql):
+        self.get_records_calls.append(sql)
+        return [("2026-01-01", "Movie", 2024, 4.5, False, "tag")]
+
+
+@pytest.mark.parametrize(
+    "value, expected",
+    [
+        (None, None),
+        ("", None),
+        ("  ", None),
+        ("abc", "abc"),
+    ],
+)
+def test_normalize(value, expected):
+    assert module._normalize(value) == expected
+
+
+def test_create_table_calls_hook_run(monkeypatch):
+    created = {}
+
+    def fake_hook_ctor(postgres_conn_id):
+        hook = FakeHookCreate(postgres_conn_id)
+        created["hook"] = hook
+        return hook
+
+    monkeypatch.setattr(module, "PostgresHook", fake_hook_ctor)
+
+    module.create_table()
+
+    hook = created["hook"]
+    assert hook.postgres_conn_id == module.CONN_ID
+    assert len(hook.run_calls) >= 1
+    assert f"CREATE TABLE IF NOT EXISTS {module.TABLE}" in hook.run_calls[0]
+
+
+def test_extract_and_load_transforms_rows(monkeypatch, tmp_path):
+    csv_content = "Date,Name,Year,Letterboxd URI,Rating,Rewatch,Tags,Watched Date\n"
+    csv_content += "2021-05-14,Scott Pilgrim vs. the World,2010,https://boxd.it/1Rjeo5,4,,watchparty,2021-05-09\n"
+    csv_content += "2021-05-15,Accepted,2006,https://boxd.it/1Rrblt,2,Yes,,2021-05-10\n"
+
+    csv_file = tmp_path / "diary.csv"
+    csv_file.write_text(csv_content, encoding="utf-8")
+
+    created = {}
+
+    def fake_hook_ctor(postgres_conn_id):
+        hook = FakeHookWithConn(postgres_conn_id)
+        created["hook"] = hook
+        return hook
+
+    monkeypatch.setattr(module, "PostgresHook", fake_hook_ctor)
+    monkeypatch.setattr(module, "CSV_PATH", str(csv_file))
+
+    module.extract_and_load()
+
+    hook = created["hook"]
+    cursor = hook.conn.cursor_obj
+
+    assert hook.postgres_conn_id == module.CONN_ID
+    assert cursor.execute_calls[0].strip() == f"TRUNCATE TABLE {module.TABLE};"
+    assert hook.conn.commit_count == 1
+    assert cursor.closed is True
+    assert hook.conn.closed is True
+
+    assert len(cursor.executemany_calls) == 1
+    sql, rows = cursor.executemany_calls[0]
+    assert f"INSERT INTO {module.TABLE}" in sql
+    assert len(rows) == 2
+    assert rows[0][1] == "Scott Pilgrim vs. the World"
+    assert rows[0][4] == 4.0
+    assert rows[1][5] is True
+
+
+def test_verify_load_uses_queries(monkeypatch):
+    created = {}
+
+    def fake_hook_ctor(postgres_conn_id):
+        hook = FakeHookVerify(postgres_conn_id)
+        created["hook"] = hook
+        return hook
+
+    monkeypatch.setattr(module, "PostgresHook", fake_hook_ctor)
+
+    module.verify_load()
+
+    hook = created["hook"]
+    assert hook.postgres_conn_id == module.CONN_ID
+    assert len(hook.get_first_calls) == 1
+    assert f"SELECT COUNT(*) FROM {module.TABLE}" in hook.get_first_calls[0]
+    assert len(hook.get_records_calls) == 1
+    assert f"FROM {module.TABLE}" in hook.get_records_calls[0]
+
+
+def test_dag_task_chain():
+    dag = module.dag
+    assert dag.dag_id == "letterboxd_diary_etl"
+
+    create_task = dag.get_task("create_table")
+    extract_task = dag.get_task("extract_and_load")
+    verify_task = dag.get_task("verify_load")
+
+    assert extract_task.task_id in create_task.downstream_task_ids
+    assert verify_task.task_id in extract_task.downstream_task_ids
+
+
+def test_extract_task_publishes_diary_dataset():
+    extract_task = module.dag.get_task("extract_and_load")
+    outlet_uris = {dataset.uri for dataset in extract_task.outlets}
+    assert airflow_datasets.LETTERBOXD_DIARY_DATASET.uri in outlet_uris
