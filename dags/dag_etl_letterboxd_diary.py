@@ -9,10 +9,22 @@ from airflow.providers.postgres.hooks.postgres import PostgresHook
 
 try:
     from airflow_datasets import LETTERBOXD_DIARY_DATASET
+    from etl_helpers import (
+        configure_csv_field_limit,
+        normalize_text_or_none,
+        to_float_or_none,
+        to_int_or_none,
+    )
     from etl_tasks import create_standard_etl_tasks
     from notifications import notify_discord_failure
 except ModuleNotFoundError:
     from dags.airflow_datasets import LETTERBOXD_DIARY_DATASET
+    from dags.etl_helpers import (
+        configure_csv_field_limit,
+        normalize_text_or_none,
+        to_float_or_none,
+        to_int_or_none,
+    )
     from dags.etl_tasks import create_standard_etl_tasks
     from dags.notifications import notify_discord_failure
 
@@ -25,10 +37,7 @@ TABLE = "letterboxd_diary"
 
 
 def _normalize(value: str | None) -> str | None:
-    if value is None:
-        return None
-    trimmed = value.strip()
-    return trimmed if trimmed else None
+    return normalize_text_or_none(value)
 
 
 def _to_date_or_none(value: str | None):
@@ -36,20 +45,6 @@ def _to_date_or_none(value: str | None):
     if normalized is None:
         return None
     return datetime.strptime(normalized, "%Y-%m-%d").date()
-
-
-def _to_int_or_none(value: str | None):
-    normalized = _normalize(value)
-    if normalized is None:
-        return None
-    return int(normalized)
-
-
-def _to_float_or_none(value: str | None):
-    normalized = _normalize(value)
-    if normalized is None:
-        return None
-    return float(normalized)
 
 
 def _to_bool_rewatch(value: str | None):
@@ -89,6 +84,7 @@ def extract_and_load():
     hook = PostgresHook(postgres_conn_id=CONN_ID)
     conn = hook.get_conn()
     cursor = conn.cursor()
+    configure_csv_field_limit()
 
     required_columns = {
         "Date",
@@ -132,9 +128,9 @@ def extract_and_load():
             record = (
                 _to_date_or_none(row.get("Date")),
                 _normalize(row.get("Name")),
-                _to_int_or_none(row.get("Year")),
+                to_int_or_none(row.get("Year")),
                 _normalize(row.get("Letterboxd URI")),
-                _to_float_or_none(row.get("Rating")),
+                to_float_or_none(row.get("Rating")),
                 _to_bool_rewatch(row.get("Rewatch")),
                 _normalize(row.get("Tags")),
                 _to_date_or_none(row.get("Watched Date")),

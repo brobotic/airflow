@@ -7,6 +7,16 @@ def normalize_imdb_null(value):
     return None if value == r"\N" else value
 
 
+def normalize_text_or_none(value):
+    value = normalize_imdb_null(value)
+    if value is None:
+        return None
+    value = str(value).strip()
+    if value == "":
+        return None
+    return value
+
+
 def to_int_or_none(value):
     value = normalize_imdb_null(value)
     if value is None:
