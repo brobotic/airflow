@@ -162,7 +162,7 @@ def extract_and_load():
     has_ratings = _table_exists(hook, "title_ratings")
 
     ratings_join = (
-        "LEFT JOIN title_ratings r ON r.tconst = c.tconst"
+        "LEFT JOIN title_ratings r ON r.tconst = b.tconst"
         if has_ratings
         else "LEFT JOIN (SELECT NULL::VARCHAR(20) AS tconst, NULL::DOUBLE PRECISION AS average_rating, NULL::INTEGER AS num_votes) r ON false"
     )
