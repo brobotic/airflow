@@ -86,7 +86,103 @@ Current Letterboxd scope is intentionally minimal: only `diary.csv`.
 
 - ETL DAG: `letterboxd_diary_etl` → loads into `letterboxd_diary`
 - Mart DAG: `mart_letterboxd_diary` → builds rollups in `mart_letterboxd_diary`
+- Match mart DAG: `mart_letterboxd_movie_matches` → builds movie-level joins in `mart_letterboxd_movie_matches`
 - Trigger wiring: `mart_letterboxd_diary` runs from `LETTERBOXD_DIARY_DATASET`
+
+### Elasticsearch indices (kept separate)
+
+- Diary rollup mart index env var: `ELASTICSEARCH_LETTERBOXD_DIARY_INDEX`
+    - Default index: `mart_letterboxd_diary`
+- Movie-match mart index env var: `ELASTICSEARCH_LETTERBOXD_MOVIE_MATCHES_INDEX`
+    - Default index: `mart_letterboxd_movie_matches`
+
+This keeps Letterboxd datasets separate from IMDb marts while still allowing cross-index dashboards.
+
+### Kibana cross-index mapping guide
+
+Use `mart_letterboxd_movie_matches` as the bridge index when blending with IMDb marts.
+
+Recommended key fields for blended visuals:
+
+- Join key to IMDb marts: `matched_tconst`
+- Letterboxd-side rating: `letterboxd_rating`
+- IMDb-side rating: `imdb_average_rating`
+- IMDb popularity: `imdb_num_votes`
+- Match quality filter: `match_confidence`
+- Time axis: `activity_date`
+
+Recommended filters:
+
+- Include only confident matches: `match_confidence:(exact_primary_title_year OR exact_original_title_year)`
+- Exclude unmatched rows when comparing with IMDb: `matched_tconst:*`
+
+Example dashboard ideas:
+
+- Letterboxd vs IMDb rating gap by month (`avg(letterboxd_rating)` vs `avg(imdb_average_rating)`)
+- Most-watched matched movies ranked by `count(diary_id)` and `imdb_num_votes`
+- Match-quality monitor split by `match_confidence`
+
+### Saved query snippets (Kibana + SQL)
+
+Use these for quick dashboard prototyping.
+
+KQL filters (Kibana):
+
+- Confident matches only:
+    - `match_confidence:(exact_primary_title_year OR exact_original_title_year)`
+- IMDb-comparable rows only:
+    - `matched_tconst:*`
+- Exclude unmatched + low-confidence in one filter:
+    - `matched_tconst:* AND NOT match_confidence:low_confidence`
+
+SQL snippets (Postgres):
+
+1) Rating gap by month (Letterboxd vs IMDb):
+
+```sql
+SELECT
+        date_trunc('month', activity_date)::date AS month,
+        ROUND(AVG(letterboxd_rating)::numeric, 2) AS avg_letterboxd_rating,
+        ROUND(AVG(imdb_average_rating)::numeric, 2) AS avg_imdb_rating,
+        ROUND((AVG(letterboxd_rating) - AVG(imdb_average_rating))::numeric, 2) AS rating_gap,
+        COUNT(*) AS matched_entries
+FROM mart_letterboxd_movie_matches
+WHERE matched_tconst IS NOT NULL
+    AND match_confidence IN ('exact_primary_title_year', 'exact_original_title_year')
+    AND activity_date IS NOT NULL
+GROUP BY 1
+ORDER BY 1;
+```
+
+2) Most watched matched movies:
+
+```sql
+SELECT
+        matched_tconst,
+        matched_primary_title,
+        matched_start_year,
+        COUNT(*) AS diary_watches,
+        ROUND(AVG(letterboxd_rating)::numeric, 2) AS avg_letterboxd_rating,
+        ROUND(AVG(imdb_average_rating)::numeric, 2) AS avg_imdb_rating,
+        MAX(imdb_num_votes) AS imdb_num_votes
+FROM mart_letterboxd_movie_matches
+WHERE matched_tconst IS NOT NULL
+GROUP BY matched_tconst, matched_primary_title, matched_start_year
+ORDER BY diary_watches DESC, imdb_num_votes DESC NULLS LAST
+LIMIT 50;
+```
+
+3) Match-quality monitor:
+
+```sql
+SELECT
+        match_confidence,
+        COUNT(*) AS row_count,
+        ROUND(100.0 * COUNT(*) / NULLIF(SUM(COUNT(*)) OVER (), 0), 2) AS pct_of_total
+FROM mart_letterboxd_movie_matches
+GROUP BY match_confidence
+ORDER BY row_count DESC;
+```
 
 ### Run DAG tasks manually
 
@@ -123,6 +219,27 @@ Available `--query` values:
 - `top-film-years`
 - `rewatch-months`
 - `recent-entries`
+
+For the movie-level join mart, use `scripts/query_letterboxd_movie_matches.py`.
+
+Examples:
+
+```bash
+python scripts/query_letterboxd_movie_matches.py --query overview
+python scripts/query_letterboxd_movie_matches.py --query match-quality
+python scripts/query_letterboxd_movie_matches.py --query rating-gap-monthly --limit 12
+python scripts/query_letterboxd_movie_matches.py --query top-matched-movies --limit 25
+python scripts/query_letterboxd_movie_matches.py --query unmatched --limit 25
+```
+
+Available `--query` values:
+
+- `overview`
+- `match-quality`
+- `rating-gap-monthly`
+- `top-matched-movies`
+- `unmatched`
+- `recent-matches`
 
 ## Link movies to directors
 
