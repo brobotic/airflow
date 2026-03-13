@@ -75,3 +75,79 @@ def test_dag_uses_source_datasets_as_schedule():
     assert airflow_datasets.TITLE_CREW_DATASET.uri in schedule_dataset_uris
     assert airflow_datasets.NAME_BASICS_DATASET.uri in schedule_dataset_uris
     assert airflow_datasets.TITLE_PRINCIPALS_DATASET.uri in schedule_dataset_uris
+
+
+class FakeHookCreateTable:
+    def __init__(self, postgres_conn_id):
+        self.postgres_conn_id = postgres_conn_id
+        self.run_calls = []
+
+    def get_first(self, sql, parameters=None):
+        if "information_schema.tables" in sql:
+            return (1,)
+        return (5,)
+
+    def run(self, sql, parameters=None):
+        self.run_calls.append((sql, parameters))
+
+
+def test_create_table_adds_composer_columns(monkeypatch):
+    """Ensure composer columns are created/added for forward-compatible deployments."""
+    created = {}
+
+    def fake_hook_ctor(postgres_conn_id):
+        hook = FakeHookCreateTable(postgres_conn_id)
+        created["hook"] = hook
+        return hook
+
+    monkeypatch.setattr(module, "PostgresHook", fake_hook_ctor)
+    module.create_table()
+
+    run_sql = "\n".join(sql for sql, _ in created["hook"].run_calls)
+    assert "composer_nconsts" in run_sql
+    assert "composer_names" in run_sql
+
+
+class FakeHookVerify:
+    def __init__(self, postgres_conn_id):
+        self.postgres_conn_id = postgres_conn_id
+
+    def get_first(self, sql, parameters=None):
+        if "COUNT(*) FROM mart_movie_credits;" in sql:
+            return (10,)
+        if "directors_nconsts" in sql:
+            return (8,)
+        if "dop_nconsts" in sql:
+            return (7,)
+        if "editor_nconsts" in sql:
+            return (6,)
+        if "composer_nconsts" in sql:
+            return (5,)
+        return (0,)
+
+    def get_records(self, sql, parameters=None):
+        return [
+            (
+                "Movie A",
+                2000,
+                "Director A",
+                "DoP A",
+                "Editor A",
+                "Composer A",
+                8.2,
+                12345,
+            )
+        ]
+
+
+def test_verify_load_includes_composer_count(monkeypatch):
+    """Ensure verify_load returns composer coverage metrics."""
+    monkeypatch.setattr(module, "PostgresHook", FakeHookVerify)
+
+    result = module.verify_load()
+
+    assert result["row_count"] == 10
+    assert result["with_director_count"] == 8
+    assert result["with_dop_count"] == 7
+    assert result["with_editor_count"] == 6
+    assert result["with_composer_count"] == 5

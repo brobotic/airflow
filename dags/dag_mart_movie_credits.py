@@ -132,6 +132,8 @@ def create_table():
             dop_names            TEXT,
             editor_nconsts       TEXT,
             editor_names         TEXT,
+            composer_nconsts     TEXT,
+            composer_names       TEXT,
             average_rating       DOUBLE PRECISION,
             num_votes            INTEGER,
             last_refreshed_at    TIMESTAMP
@@ -142,11 +144,13 @@ def create_table():
     # Keep existing deployments forward-compatible when new credit columns are introduced.
     hook.run(f"ALTER TABLE {TABLE} ADD COLUMN IF NOT EXISTS editor_nconsts TEXT;")
     hook.run(f"ALTER TABLE {TABLE} ADD COLUMN IF NOT EXISTS editor_names TEXT;")
+    hook.run(f"ALTER TABLE {TABLE} ADD COLUMN IF NOT EXISTS composer_nconsts TEXT;")
+    hook.run(f"ALTER TABLE {TABLE} ADD COLUMN IF NOT EXISTS composer_names TEXT;")
     logging.info("Table '%s' is ready.", TABLE)
 
 
 def extract_and_load():
-    """Build per-movie credits mart enriched with director, DoP, and editor data."""
+    """Build per-movie credits mart enriched with director, DoP, editor, and composer data."""
     hook = PostgresHook(postgres_conn_id=CONN_ID)
     has_ratings = _table_exists(hook, "title_ratings")
 
@@ -225,6 +229,26 @@ def extract_and_load():
             FROM editor_expanded e
             LEFT JOIN name_basics n ON n.nconst = e.editor_nconst
             GROUP BY e.tconst
+        ),
+        composer_expanded AS (
+            SELECT DISTINCT
+                p.tconst,
+                p.nconst AS composer_nconst
+            FROM title_principals p
+            WHERE p.nconst IS NOT NULL
+              AND (
+                  p.category = 'composer'
+                  OR (p.job IS NOT NULL AND lower(p.job) LIKE '%composer%')
+              )
+        ),
+        composer_agg AS (
+            SELECT
+                c.tconst,
+                string_agg(DISTINCT c.composer_nconst, ',' ORDER BY c.composer_nconst) AS composer_nconsts,
+                string_agg(DISTINCT n.primary_name, ', ' ORDER BY n.primary_name) AS composer_names
+            FROM composer_expanded c
+            LEFT JOIN name_basics n ON n.nconst = c.composer_nconst
+            GROUP BY c.tconst
         )
         INSERT INTO {TABLE} (
             tconst,
@@ -237,6 +261,8 @@ def extract_and_load():
             dop_names,
             editor_nconsts,
             editor_names,
+            composer_nconsts,
+            composer_names,
             average_rating,
             num_votes,
             last_refreshed_at
@@ -252,6 +278,8 @@ def extract_and_load():
             dopa.dop_names,
             ea.editor_nconsts,
             ea.editor_names,
+            ca.composer_nconsts,
+            ca.composer_names,
             r.average_rating,
             r.num_votes,
             now() AS last_refreshed_at
@@ -259,6 +287,7 @@ def extract_and_load():
         LEFT JOIN directors_agg da ON da.tconst = mb.tconst
         LEFT JOIN dop_agg dopa ON dopa.tconst = mb.tconst
         LEFT JOIN editor_agg ea ON ea.tconst = mb.tconst
+        LEFT JOIN composer_agg ca ON ca.tconst = mb.tconst
         {ratings_join};
     """
     )
@@ -276,7 +305,7 @@ def extract_and_load():
 
 
 def verify_load():
-    """Log row counts and top movies with director/DoP/editor credits."""
+    """Log row counts and top movies with director/DoP/editor/composer credits."""
     hook = PostgresHook(postgres_conn_id=CONN_ID)
 
     total = hook.get_first(f"SELECT COUNT(*) FROM {TABLE};")[0]
@@ -289,15 +318,19 @@ def verify_load():
     with_editor = hook.get_first(
         f"SELECT COUNT(*) FROM {TABLE} WHERE editor_nconsts IS NOT NULL AND editor_nconsts <> '';"
     )[0]
+    with_composer = hook.get_first(
+        f"SELECT COUNT(*) FROM {TABLE} WHERE composer_nconsts IS NOT NULL AND composer_nconsts <> '';"
+    )[0]
 
     logging.info("Total rows: %d", total)
     logging.info("Rows with director credits: %d", with_directors)
     logging.info("Rows with DoP credits: %d", with_dop)
     logging.info("Rows with editor credits: %d", with_editor)
+    logging.info("Rows with composer credits: %d", with_composer)
 
     sample = hook.get_records(
         f"""
-        SELECT primary_title, start_year, directors_names, dop_names, editor_names, average_rating, num_votes
+        SELECT primary_title, start_year, directors_names, dop_names, editor_names, composer_names, average_rating, num_votes
         FROM {TABLE}
         ORDER BY num_votes DESC NULLS LAST, average_rating DESC NULLS LAST
         LIMIT 10;
@@ -312,6 +345,7 @@ def verify_load():
         "with_director_count": with_directors,
         "with_dop_count": with_dop,
         "with_editor_count": with_editor,
+        "with_composer_count": with_composer,
     }
 
 
@@ -390,6 +424,8 @@ def export_to_elasticsearch():
                     dop_names,
                     editor_nconsts,
                     editor_names,
+                    composer_nconsts,
+                    composer_names,
                     average_rating,
                     num_votes,
                     last_refreshed_at
@@ -414,6 +450,8 @@ def export_to_elasticsearch():
                         dop_names,
                         editor_nconsts,
                         editor_names,
+                        composer_nconsts,
+                        composer_names,
                         average_rating,
                         num_votes,
                         last_refreshed_at,
@@ -433,6 +471,8 @@ def export_to_elasticsearch():
                             "dop_names": dop_names,
                             "editor_nconsts": editor_nconsts,
                             "editor_names": editor_names,
+                            "composer_nconsts": composer_nconsts,
+                            "composer_names": composer_names,
                             "average_rating": average_rating,
                             "num_votes": num_votes,
                             "last_refreshed_at": (
@@ -521,7 +561,7 @@ def export_to_elasticsearch():
 
 with DAG(
     dag_id="mart_movie_credits",
-    description="Build per-movie mart with directors, directors of photography, and editors",
+    description="Build per-movie mart with directors, directors of photography, editors, and composers",
     default_args={
         "on_failure_callback": partial(
             notify_discord_failure,

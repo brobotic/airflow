@@ -21,8 +21,8 @@ AIRFLOW_WEB_PORT=8080
 
 # TODO
 
-* make sure editors exist in movie credits mart. update movie credits query script to include editor column
-* query script that can return all movies from a director and highlight watched/unwatched based on letterboxd data
+* add watched/unwatched output to movie-person query script using Letterboxd diary matches
+* add editors and composers to movie recommendations cog
 
 ## Authoring new ETL DAGs
 
@@ -309,7 +309,16 @@ WHERE b.title_type = 'movie';
 
 Note: `dags/dag_mart_director_credits.py` builds a director-level aggregate mart, not a per-movie mapping table.
 
-For a per-movie enrichment mart containing director, DoP, and editor fields, use `dags/dag_mart_movie_credits.py` (`mart_movie_credits`).
+For a per-movie enrichment mart containing director, DoP, editor, and composer fields, use `dags/dag_mart_movie_credits.py` (`mart_movie_credits`).
+
+Query the Elasticsearch movie credits mart by person name:
+
+```bash
+python scripts/query_movie_credits.py --director "Christopher Nolan"
+python scripts/query_movie_credits.py --cinematographer "Roger Deakins"
+python scripts/query_movie_credits.py --editor "Thelma Schoonmaker"
+python scripts/query_movie_credits.py --composer "Hans Zimmer"
+```
 
 Run it from the host with `psql`:
 
@@ -733,6 +742,12 @@ Use these in the Kibana query bar for each visualization.
     - `dop_nconsts : *`
 - Movies missing DoP credits:
     - `not dop_nconsts : *`
+- Movies with editor credits:
+    - `editor_nconsts : *`
+- Movies with composer credits:
+    - `composer_nconsts : *`
+- Movies missing composer credits:
+    - `not composer_nconsts : *`
 - Strongly rated + popular movies:
     - `average_rating >= 7 and num_votes >= 5000`
 

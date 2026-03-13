@@ -23,8 +23,8 @@ load_dotenv()
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Query Elasticsearch movie credits and print title/year/director/DoP/editor "
-            "for movies by a specific director, cinematographer, or editor."
+            "Query Elasticsearch movie credits and print title/year/director/DoP/editor/composer "
+            "for movies by a specific director, cinematographer, editor, or composer."
         )
     )
     person_group = parser.add_mutually_exclusive_group(required=True)
@@ -39,6 +39,10 @@ def parse_args() -> argparse.Namespace:
     person_group.add_argument(
         "--editor",
         help="Editor name to search for, e.g. 'Thelma Schoonmaker'",
+    )
+    person_group.add_argument(
+        "--composer",
+        help="Composer name to search for, e.g. 'Hans Zimmer'",
     )
     return parser.parse_args()
 
@@ -83,6 +87,7 @@ def query_movies_by_person(
             "directors_names",
             "dop_names",
             "editor_names",
+            "composer_names",
         ],
         "query": {
             "bool": {
@@ -110,6 +115,7 @@ def query_movies_by_person(
                 "director": source.get("directors_names") or "",
                 "dop": source.get("dop_names") or "",
                 "editor": source.get("editor_names") or "",
+                "composer": source.get("composer_names") or "",
             }
         )
 
@@ -125,10 +131,18 @@ def render_table(rows: list[dict[str, Any]], label: str, person_name: str) -> No
     table.add_column("Director", style="green")
     table.add_column("DoP", style="magenta")
     table.add_column("Editor", style="yellow")
+    table.add_column("Composer", style="blue")
 
     for row in rows:
         year = "" if row["year"] is None else str(row["year"])
-        table.add_row(row["title"], year, row["director"], row["dop"], row["editor"])
+        table.add_row(
+            row["title"],
+            year,
+            row["director"],
+            row["dop"],
+            row["editor"],
+            row["composer"],
+        )
 
     if not rows:
         console.print(f"No movies found for {label}: [bold]{person_name}[/bold]")
@@ -148,6 +162,10 @@ def main() -> int:
         person_name = args.cinematographer
         search_field = "dop_names"
         label = "cinematographer"
+    elif args.composer:
+        person_name = args.composer
+        search_field = "composer_names"
+        label = "composer"
     else:
         person_name = args.editor
         search_field = "editor_names"

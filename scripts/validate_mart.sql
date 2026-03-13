@@ -101,6 +101,8 @@ SELECT
     COUNT(*) AS total_movies,
     COUNT(*) FILTER (WHERE directors_nconsts IS NOT NULL AND directors_nconsts <> '') AS with_directors,
     COUNT(*) FILTER (WHERE dop_nconsts IS NOT NULL AND dop_nconsts <> '') AS with_dop,
+    COUNT(*) FILTER (WHERE editor_nconsts IS NOT NULL AND editor_nconsts <> '') AS with_editor,
+    COUNT(*) FILTER (WHERE composer_nconsts IS NOT NULL AND composer_nconsts <> '') AS with_composer,
     COUNT(*) FILTER (WHERE average_rating IS NOT NULL) AS with_rating
 FROM mart_movie_credits;
 
@@ -110,6 +112,8 @@ SELECT
     start_year,
     directors_names,
     dop_names,
+    editor_names,
+    composer_names,
     average_rating,
     num_votes
 FROM mart_movie_credits
