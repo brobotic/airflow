@@ -4,11 +4,17 @@ import argparse
 import os
 from typing import Any
 
-from dotenv import load_dotenv
 from elasticsearch import Elasticsearch
 from elasticsearch.helpers import scan
 from rich.console import Console
 from rich.table import Table
+
+
+try:
+    from dotenv import load_dotenv  # type: ignore[reportMissingImports]
+except ModuleNotFoundError:
+    def load_dotenv() -> bool:
+        return False
 
 
 load_dotenv()
@@ -17,8 +23,8 @@ load_dotenv()
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Query Elasticsearch movie credits and print title/year/director/DoP "
-            "for movies by a specific director or cinematographer."
+            "Query Elasticsearch movie credits and print title/year/director/DoP/editor "
+            "for movies by a specific director, cinematographer, or editor."
         )
     )
     person_group = parser.add_mutually_exclusive_group(required=True)
@@ -30,11 +36,15 @@ def parse_args() -> argparse.Namespace:
         "--cinematographer",
         help="Cinematographer/DoP name to search for, e.g. 'Roger Deakins'",
     )
+    person_group.add_argument(
+        "--editor",
+        help="Editor name to search for, e.g. 'Thelma Schoonmaker'",
+    )
     return parser.parse_args()
 
 
 def create_client() -> Elasticsearch:
-    host = os.getenv("ELASTICSEARCH_HOST", "http://192.168.1.60:9200")
+    host = os.getenv("ELASTICSEARCH_HOST", "http://elasticsearch-prod.home.lab:9200")
     api_key = os.getenv("ELASTICSEARCH_API_KEY")
     username = os.getenv("ELASTICSEARCH_USERNAME")
     password = os.getenv("ELASTICSEARCH_PASSWORD")
@@ -72,6 +82,7 @@ def query_movies_by_person(
             "start_year",
             "directors_names",
             "dop_names",
+            "editor_names",
         ],
         "query": {
             "bool": {
@@ -98,6 +109,7 @@ def query_movies_by_person(
                 "year": source.get("start_year"),
                 "director": source.get("directors_names") or "",
                 "dop": source.get("dop_names") or "",
+                "editor": source.get("editor_names") or "",
             }
         )
 
@@ -112,10 +124,11 @@ def render_table(rows: list[dict[str, Any]], label: str, person_name: str) -> No
     table.add_column("Year", justify="right")
     table.add_column("Director", style="green")
     table.add_column("DoP", style="magenta")
+    table.add_column("Editor", style="yellow")
 
     for row in rows:
         year = "" if row["year"] is None else str(row["year"])
-        table.add_row(row["title"], year, row["director"], row["dop"])
+        table.add_row(row["title"], year, row["director"], row["dop"], row["editor"])
 
     if not rows:
         console.print(f"No movies found for {label}: [bold]{person_name}[/bold]")
@@ -131,10 +144,14 @@ def main() -> int:
         person_name = args.director
         search_field = "directors_names"
         label = "director"
-    else:
+    elif args.cinematographer:
         person_name = args.cinematographer
         search_field = "dop_names"
         label = "cinematographer"
+    else:
+        person_name = args.editor
+        search_field = "editor_names"
+        label = "editor"
 
     client = create_client()
     try:

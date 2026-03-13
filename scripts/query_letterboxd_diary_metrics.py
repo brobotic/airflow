@@ -65,7 +65,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def create_client() -> Elasticsearch:
-    host = os.getenv("ELASTICSEARCH_HOST", "http://192.168.1.60:9200")
+    host = os.getenv("ELASTICSEARCH_HOST", "http://elasticsearch-prod.home.lab:9200")
     api_key = os.getenv("ELASTICSEARCH_API_KEY")
     username = os.getenv("ELASTICSEARCH_USERNAME")
     password = os.getenv("ELASTICSEARCH_PASSWORD")

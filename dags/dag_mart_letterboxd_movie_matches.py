@@ -63,7 +63,7 @@ def _get_elasticsearch_modules() -> tuple[Any, Any]:
 
 
 def _create_elasticsearch_client() -> Any:
-    host = os.getenv("ELASTICSEARCH_HOST", "http://192.168.1.60:9200")
+    host = os.getenv("ELASTICSEARCH_HOST", "http://elasticsearch-prod.home.lab:9200")
     api_key = os.getenv("ELASTICSEARCH_API_KEY")
     username = os.getenv("ELASTICSEARCH_USERNAME")
     password = os.getenv("ELASTICSEARCH_PASSWORD")
@@ -316,7 +316,7 @@ def export_to_elasticsearch():
     logging.getLogger("elastic_transport.transport").setLevel(logging.WARNING)
     logging.getLogger("elasticsearch").setLevel(logging.WARNING)
 
-    es_host = os.getenv("ELASTICSEARCH_HOST", "http://192.168.1.60:9200")
+    es_host = os.getenv("ELASTICSEARCH_HOST", "http://elasticsearch-prod.home.lab:9200")
     auth_mode = "api_key" if os.getenv("ELASTICSEARCH_API_KEY") else (
         "basic_auth"
         if os.getenv("ELASTICSEARCH_USERNAME") and os.getenv("ELASTICSEARCH_PASSWORD")
