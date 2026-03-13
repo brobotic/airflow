@@ -43,14 +43,14 @@ def parse_args() -> argparse.Namespace:
         default=True,
         help=(
             "Show a random sample of metric keys (default: enabled). "
-            "Use --no-random to sort results by --sort-by instead."
+            "Sampled rows are still sorted by --sort-by; use --no-random for full-index ordering."
         ),
     )
     parser.add_argument(
         "--sort-by",
         choices=["films_logged", "unique_titles", "avg_rating", "rewatch_count", "metric_key"],
         default="films_logged",
-        help="Sort column in output table (default: films_logged).",
+        help="Sort column in output table or sampled rows (default: films_logged).",
     )
     parser.add_argument(
         "--ascending",
@@ -158,17 +158,19 @@ def query_metrics(
             }
         )
 
-    if not random_sample:
-        rows.sort(
-            key=lambda row: (
-                _to_sort_value(row.get(sort_by)),
-                _to_sort_value(row.get("metric_key")),
-            ),
-            reverse=not ascending,
-        )
-        return rows[:limit]
+    rows.sort(
+        key=lambda row: (
+            _to_sort_value(row.get(sort_by)),
+            _to_sort_value(row.get("metric_key")),
+        ),
+        reverse=not ascending,
+    )
 
-    return rows
+    if random_sample:
+        # Random mode samples first, then sorts only the sampled rows for readability.
+        return rows
+
+    return rows[:limit]
 
 
 def render_table(

@@ -201,6 +201,9 @@ docker compose -f airflow.yaml exec airflow-scheduler \
 
 Use `scripts/query_letterboxd_diary_mart.py` for ready-made analytics queries.
 
+By default this script now runs in remote Postgres mode (no Docker required), so it can be
+run from another server as long as it can reach your Postgres host.
+
 Examples:
 
 ```bash
@@ -209,6 +212,20 @@ python scripts/query_letterboxd_diary_mart.py --query monthly --limit 12
 python scripts/query_letterboxd_diary_mart.py --query top-tags --limit 20
 python scripts/query_letterboxd_diary_mart.py --query rewatch-months --limit 12
 python scripts/query_letterboxd_diary_mart.py --query recent-entries --limit 25
+```
+
+Remote mode env vars:
+
+- `POSTGRES_HOST` (or `PGHOST`)
+- `POSTGRES_PORT` (or `PGPORT`)
+- `POSTGRES_USER`
+- `POSTGRES_DB`
+- `POSTGRES_PASSWORD` (used via `PGPASSWORD`)
+
+Docker fallback (old behavior):
+
+```bash
+python scripts/query_letterboxd_diary_mart.py --execution-mode docker --query overview
 ```
 
 Available `--query` values:
@@ -221,6 +238,9 @@ Available `--query` values:
 - `recent-entries`
 
 For the movie-level join mart, use `scripts/query_letterboxd_movie_matches.py`.
+
+This script also defaults to remote Postgres mode for remote execution and supports
+`--execution-mode docker` for local container execution.
 
 Examples:
 

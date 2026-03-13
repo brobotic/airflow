@@ -103,9 +103,18 @@ def parse_args() -> argparse.Namespace:
         help="Row limit for query templates that support it (default: 20).",
     )
     parser.add_argument(
+        "--execution-mode",
+        choices=["remote", "direct", "docker"],
+        default=os.getenv("POSTGRES_EXECUTION_MODE", "remote"),
+        help=(
+            "How to run psql: 'remote' for network Postgres access or 'docker' for "
+            "docker compose exec (default: remote)."
+        ),
+    )
+    parser.add_argument(
         "--service",
         default=os.getenv("POSTGRES_SERVICE", "postgres_movies"),
-        help="Docker Compose Postgres service name (default: postgres_movies).",
+        help="Docker Compose Postgres service name used by --execution-mode docker.",
     )
     parser.add_argument(
         "--user",
@@ -118,9 +127,28 @@ def parse_args() -> argparse.Namespace:
         help="Postgres database (default: movies_db).",
     )
     parser.add_argument(
+        "--host",
+        default=os.getenv("POSTGRES_HOST", os.getenv("PGHOST", "127.0.0.1")),
+        help="Postgres host used by --execution-mode remote (default: 127.0.0.1).",
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=int(os.getenv("POSTGRES_PORT", os.getenv("PGPORT", "5432"))),
+        help="Postgres port used by --execution-mode remote (default: 5432).",
+    )
+    parser.add_argument(
+        "--password-env",
+        default=os.getenv("POSTGRES_PASSWORD_ENV", "POSTGRES_PASSWORD"),
+        help=(
+            "Environment variable name containing the Postgres password for "
+            "--execution-mode remote (default: POSTGRES_PASSWORD)."
+        ),
+    )
+    parser.add_argument(
         "--compose-file",
         default=str(Path(__file__).resolve().parent.parent / "postgres.yaml"),
-        help="Path to docker compose file (default: ./postgres.yaml).",
+        help="Path to docker compose file used by --execution-mode docker.",
     )
     parser.add_argument(
         "--no-header",
@@ -134,6 +162,78 @@ def ensure_prerequisites(compose_file: Path, service: str) -> None:
     if shutil.which("docker") is None:
         print("Error: docker command not found in PATH.", file=sys.stderr)
         raise SystemExit(1)
+
+
+def ensure_direct_prerequisites() -> None:
+    if shutil.which("psql") is None:
+        print("Error: psql command not found in PATH.", file=sys.stderr)
+        raise SystemExit(1)
+
+
+def run_direct_query(args: argparse.Namespace, sql: str, psql_flags: list[str]) -> int:
+    ensure_direct_prerequisites()
+
+    command = [
+        "psql",
+        "-h",
+        args.host,
+        "-p",
+        str(args.port),
+        "-U",
+        args.user,
+        "-d",
+        args.db,
+        *psql_flags,
+        "-c",
+        sql,
+    ]
+
+    env = os.environ.copy()
+    password = env.get(args.password_env)
+    if password:
+        env["PGPASSWORD"] = password
+
+    print(
+        f"Running query '{args.query}' on {args.db} at {args.host}:{args.port} "
+        "using direct psql..."
+    )
+    print(f"SQL: {sql}\n")
+
+    result = subprocess.run(command, text=True, env=env, check=False)
+    return result.returncode
+
+
+def run_docker_query(
+    args: argparse.Namespace,
+    sql: str,
+    psql_flags: list[str],
+    compose_file: Path,
+) -> int:
+    ensure_prerequisites(compose_file=compose_file, service=args.service)
+
+    command = [
+        "docker",
+        "compose",
+        "-f",
+        str(compose_file),
+        "exec",
+        "-T",
+        args.service,
+        "psql",
+        "-U",
+        args.user,
+        "-d",
+        args.db,
+        *psql_flags,
+        "-c",
+        sql,
+    ]
+
+    print(f"Running query '{args.query}' on {args.db} via service {args.service}...")
+    print(f"SQL: {sql}\n")
+
+    result = subprocess.run(command, text=True, check=False)
+    return result.returncode
 
     if not compose_file.is_file():
         print(f"Error: compose file not found at {compose_file}", file=sys.stderr)
@@ -175,9 +275,9 @@ def main() -> int:
     if args.limit <= 0:
         print("Error: --limit must be > 0", file=sys.stderr)
         return 1
-
-    compose_file = Path(args.compose_file).expanduser().resolve()
-    ensure_prerequisites(compose_file=compose_file, service=args.service)
+    if args.port <= 0:
+        print("Error: --port must be > 0", file=sys.stderr)
+        return 1
 
     sql = QUERY_SQL[args.query].format(limit=args.limit).strip()
 
@@ -185,29 +285,16 @@ def main() -> int:
     if args.no_header:
         psql_flags.extend(["-A", "-t"])
 
-    command = [
-        "docker",
-        "compose",
-        "-f",
-        str(compose_file),
-        "exec",
-        "-T",
-        args.service,
-        "psql",
-        "-U",
-        args.user,
-        "-d",
-        args.db,
-        *psql_flags,
-        "-c",
-        sql,
-    ]
+    if args.execution_mode == "docker":
+        compose_file = Path(args.compose_file).expanduser().resolve()
+        return run_docker_query(
+            args=args,
+            sql=sql,
+            psql_flags=psql_flags,
+            compose_file=compose_file,
+        )
 
-    print(f"Running query '{args.query}' on {args.db} via service {args.service}...")
-    print(f"SQL: {sql}\n")
-
-    result = subprocess.run(command, text=True, check=False)
-    return result.returncode
+    return run_direct_query(args=args, sql=sql, psql_flags=psql_flags)
 
 
 if __name__ == "__main__":
