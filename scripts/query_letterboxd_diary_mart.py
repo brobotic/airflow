@@ -12,8 +12,12 @@ import sys
 from typing import Any
 from pathlib import Path
 
+from dotenv import load_dotenv
 from rich.console import Console
 from rich.table import Table
+
+
+load_dotenv()
 
 
 QUERY_SQL = {
@@ -332,7 +336,7 @@ def render_table(args: argparse.Namespace, sql: str, csv_output: str) -> None:
     table = Table(title=title)
     for field in fieldnames:
         style, justify = _column_style(field)
-        table.add_column(_column_display_name(field), style=style, justify=justify)
+        table.add_column(_column_display_name(field), style=style, justify=justify) # type: ignore
 
     for row in rows:
         table.add_row(*[(row.get(field) or "") for field in fieldnames])

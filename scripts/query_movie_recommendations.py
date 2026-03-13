@@ -5,9 +5,13 @@ import os
 import time
 from typing import Any
 
+from dotenv import load_dotenv
 from elasticsearch import Elasticsearch
 from rich.console import Console
 from rich.table import Table
+
+
+load_dotenv()
 
 
 def parse_args() -> argparse.Namespace:
