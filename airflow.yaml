@@ -69,7 +69,7 @@ x-airflow-common:
     AIRFLOW__CORE__LOAD_EXAMPLES: 'true'
     AIRFLOW__CORE__EXECUTION_API_SERVER_URL: 'http://airflow-apiserver:8080/execution/'
     AIRFLOW__WEBSERVER__BASE_URL: "http://192.168.1.33:8080"
-    AIRFLOW__API__BASE_URL: "http://192.168.1.33:8080/api/v1"
+    AIRFLOW__API__BASE_URL: "http://192.168.1.33:8080"
     AIRFLOW__METRICS__STATSD_ON: 'true'
     AIRFLOW__METRICS__STATSD_HOST: statsd-exporter
     AIRFLOW__METRICS__STATSD_PORT: 9125
