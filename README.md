@@ -290,7 +290,7 @@ WHERE b.title_type = 'movie';
 
 Note: `dags/dag_mart_director_credits.py` builds a director-level aggregate mart, not a per-movie mapping table.
 
-For a per-movie enrichment mart containing director and DoP fields, use `dags/dag_mart_movie_credits.py` (`mart_movie_credits`).
+For a per-movie enrichment mart containing director, DoP, and editor fields, use `dags/dag_mart_movie_credits.py` (`mart_movie_credits`).
 
 Run it from the host with `psql`:
 
@@ -483,7 +483,7 @@ The DAG `dags/dag_mart_titles_enriched.py` includes an `export_to_elasticsearch`
 
 ### Environment variables
 
-- `ELASTICSEARCH_HOST` (default: `http://192.168.1.60:9200`)
+- `ELASTICSEARCH_HOST` (default: `http://elasticsearch-prod.home.lab:9200`)
 - `ELASTICSEARCH_INDEX` (default: `mart_titles_enriched`)
 - `ELASTICSEARCH_API_KEY` (optional)
 - `ELASTICSEARCH_USERNAME` / `ELASTICSEARCH_PASSWORD` (optional)

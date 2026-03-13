@@ -63,7 +63,7 @@ def _get_elasticsearch_modules() -> tuple[Any, Any]:
 
 
 def _create_elasticsearch_client() -> Any:
-    host = os.getenv("ELASTICSEARCH_HOST", "http://192.168.1.60:9200")
+    host = os.getenv("ELASTICSEARCH_HOST", "http://elasticsearch-prod.home.lab:9200")
     api_key = os.getenv("ELASTICSEARCH_API_KEY")
     username = os.getenv("ELASTICSEARCH_USERNAME")
     password = os.getenv("ELASTICSEARCH_PASSWORD")
@@ -130,17 +130,23 @@ def create_table():
             directors_names      TEXT,
             dop_nconsts          TEXT,
             dop_names            TEXT,
+            editor_nconsts       TEXT,
+            editor_names         TEXT,
             average_rating       DOUBLE PRECISION,
             num_votes            INTEGER,
             last_refreshed_at    TIMESTAMP
         );
     """
     )
+
+    # Keep existing deployments forward-compatible when new credit columns are introduced.
+    hook.run(f"ALTER TABLE {TABLE} ADD COLUMN IF NOT EXISTS editor_nconsts TEXT;")
+    hook.run(f"ALTER TABLE {TABLE} ADD COLUMN IF NOT EXISTS editor_names TEXT;")
     logging.info("Table '%s' is ready.", TABLE)
 
 
 def extract_and_load():
-    """Build per-movie credits mart enriched with director and DoP data."""
+    """Build per-movie credits mart enriched with director, DoP, and editor data."""
     hook = PostgresHook(postgres_conn_id=CONN_ID)
     has_ratings = _table_exists(hook, "title_ratings")
 
@@ -199,6 +205,26 @@ def extract_and_load():
             FROM dop_expanded d
             LEFT JOIN name_basics n ON n.nconst = d.dop_nconst
             GROUP BY d.tconst
+        ),
+        editor_expanded AS (
+            SELECT DISTINCT
+                p.tconst,
+                p.nconst AS editor_nconst
+            FROM title_principals p
+            WHERE p.nconst IS NOT NULL
+              AND (
+                  p.category = 'editor'
+                  OR (p.job IS NOT NULL AND lower(p.job) LIKE '%editor%')
+              )
+        ),
+        editor_agg AS (
+            SELECT
+                e.tconst,
+                string_agg(DISTINCT e.editor_nconst, ',' ORDER BY e.editor_nconst) AS editor_nconsts,
+                string_agg(DISTINCT n.primary_name, ', ' ORDER BY n.primary_name) AS editor_names
+            FROM editor_expanded e
+            LEFT JOIN name_basics n ON n.nconst = e.editor_nconst
+            GROUP BY e.tconst
         )
         INSERT INTO {TABLE} (
             tconst,
@@ -209,6 +235,8 @@ def extract_and_load():
             directors_names,
             dop_nconsts,
             dop_names,
+            editor_nconsts,
+            editor_names,
             average_rating,
             num_votes,
             last_refreshed_at
@@ -222,12 +250,15 @@ def extract_and_load():
             da.directors_names,
             dopa.dop_nconsts,
             dopa.dop_names,
+            ea.editor_nconsts,
+            ea.editor_names,
             r.average_rating,
             r.num_votes,
             now() AS last_refreshed_at
         FROM movie_base mb
         LEFT JOIN directors_agg da ON da.tconst = mb.tconst
         LEFT JOIN dop_agg dopa ON dopa.tconst = mb.tconst
+        LEFT JOIN editor_agg ea ON ea.tconst = mb.tconst
         {ratings_join};
     """
     )
@@ -245,7 +276,7 @@ def extract_and_load():
 
 
 def verify_load():
-    """Log row counts and top movies with credits."""
+    """Log row counts and top movies with director/DoP/editor credits."""
     hook = PostgresHook(postgres_conn_id=CONN_ID)
 
     total = hook.get_first(f"SELECT COUNT(*) FROM {TABLE};")[0]
@@ -255,14 +286,18 @@ def verify_load():
     with_dop = hook.get_first(
         f"SELECT COUNT(*) FROM {TABLE} WHERE dop_nconsts IS NOT NULL AND dop_nconsts <> '';"
     )[0]
+    with_editor = hook.get_first(
+        f"SELECT COUNT(*) FROM {TABLE} WHERE editor_nconsts IS NOT NULL AND editor_nconsts <> '';"
+    )[0]
 
     logging.info("Total rows: %d", total)
     logging.info("Rows with director credits: %d", with_directors)
     logging.info("Rows with DoP credits: %d", with_dop)
+    logging.info("Rows with editor credits: %d", with_editor)
 
     sample = hook.get_records(
         f"""
-        SELECT primary_title, start_year, directors_names, dop_names, average_rating, num_votes
+        SELECT primary_title, start_year, directors_names, dop_names, editor_names, average_rating, num_votes
         FROM {TABLE}
         ORDER BY num_votes DESC NULLS LAST, average_rating DESC NULLS LAST
         LIMIT 10;
@@ -276,6 +311,7 @@ def verify_load():
         "sample_count": len(sample),
         "with_director_count": with_directors,
         "with_dop_count": with_dop,
+        "with_editor_count": with_editor,
     }
 
 
@@ -284,7 +320,7 @@ def export_to_elasticsearch():
     logging.getLogger("elastic_transport.transport").setLevel(logging.WARNING)
     logging.getLogger("elasticsearch").setLevel(logging.WARNING)
 
-    es_host = os.getenv("ELASTICSEARCH_HOST", "http://192.168.1.60:9200")
+    es_host = os.getenv("ELASTICSEARCH_HOST", "http://elasticsearch-prod.home.lab:9200")
     auth_mode = "api_key" if os.getenv("ELASTICSEARCH_API_KEY") else (
         "basic_auth"
         if os.getenv("ELASTICSEARCH_USERNAME") and os.getenv("ELASTICSEARCH_PASSWORD")
@@ -352,6 +388,8 @@ def export_to_elasticsearch():
                     directors_names,
                     dop_nconsts,
                     dop_names,
+                    editor_nconsts,
+                    editor_names,
                     average_rating,
                     num_votes,
                     last_refreshed_at
@@ -374,6 +412,8 @@ def export_to_elasticsearch():
                         directors_names,
                         dop_nconsts,
                         dop_names,
+                        editor_nconsts,
+                        editor_names,
                         average_rating,
                         num_votes,
                         last_refreshed_at,
@@ -391,6 +431,8 @@ def export_to_elasticsearch():
                             "directors_names": directors_names,
                             "dop_nconsts": dop_nconsts,
                             "dop_names": dop_names,
+                            "editor_nconsts": editor_nconsts,
+                            "editor_names": editor_names,
                             "average_rating": average_rating,
                             "num_votes": num_votes,
                             "last_refreshed_at": (
@@ -479,7 +521,7 @@ def export_to_elasticsearch():
 
 with DAG(
     dag_id="mart_movie_credits",
-    description="Build per-movie mart with directors and directors of photography",
+    description="Build per-movie mart with directors, directors of photography, and editors",
     default_args={
         "on_failure_callback": partial(
             notify_discord_failure,
