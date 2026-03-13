@@ -2,11 +2,8 @@
 
 # TODO
 
-* movie recommendation discord bot
-    * add new cog to corvus
-    * pulls random recs from ES based on query movie rec script
-    * corvus sends embed w/ pagination of X recommendations
-    * how to programmatically get movie cover art? the movie db api + my own rec service?
+* make sure editors exist in movie credits mart. update movie credits query script to include editor column
+* query script that can return all movies from a director and highlight watched/unwatched based on letterboxd data
 
 ## Authoring new ETL DAGs
 
@@ -209,9 +206,12 @@ Examples:
 ```bash
 python scripts/query_letterboxd_diary_mart.py --query overview
 python scripts/query_letterboxd_diary_mart.py --query monthly --limit 12
+python scripts/query_letterboxd_diary_mart.py --query year-overview --year 2024
 python scripts/query_letterboxd_diary_mart.py --query top-tags --limit 20
+python scripts/query_letterboxd_diary_mart.py --query top-tags --year 2024 --limit 20
 python scripts/query_letterboxd_diary_mart.py --query rewatch-months --limit 12
 python scripts/query_letterboxd_diary_mart.py --query recent-entries --limit 25
+python scripts/query_letterboxd_diary_mart.py --query film-year-entries --film-year 1999
 ```
 
 Remote mode env vars:
@@ -236,6 +236,8 @@ Available `--query` values:
 - `top-film-years`
 - `rewatch-months`
 - `recent-entries`
+- `year-overview`
+- `film-year-entries`
 
 For the movie-level join mart, use `scripts/query_letterboxd_movie_matches.py`.
 
@@ -250,6 +252,7 @@ python scripts/query_letterboxd_movie_matches.py --query match-quality
 python scripts/query_letterboxd_movie_matches.py --query rating-gap-monthly --limit 12
 python scripts/query_letterboxd_movie_matches.py --query top-matched-movies --limit 25
 python scripts/query_letterboxd_movie_matches.py --query unmatched --limit 25
+python scripts/query_letterboxd_movie_matches.py --query film-year-entries --film-year 1999
 ```
 
 Available `--query` values:
@@ -260,6 +263,7 @@ Available `--query` values:
 - `top-matched-movies`
 - `unmatched`
 - `recent-matches`
+- `film-year-entries`
 
 ## Link movies to directors
 

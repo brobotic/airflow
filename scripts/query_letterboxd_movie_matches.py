@@ -3,11 +3,16 @@
 from __future__ import annotations
 
 import argparse
+import csv
+import io
 import os
 import shutil
 import subprocess
 import sys
 from pathlib import Path
+
+from rich.console import Console
+from rich.table import Table
 
 
 QUERY_SQL = {
@@ -80,8 +85,26 @@ QUERY_SQL = {
             imdb_average_rating,
             match_confidence
         FROM mart_letterboxd_movie_matches
+        {recent_matches_filter}
         ORDER BY activity_date DESC NULLS LAST, diary_id DESC
         LIMIT {limit};
+    """,
+    "film-year-entries": """
+        SELECT
+            activity_date,
+            film_name,
+            film_year,
+            letterboxd_rating,
+            rewatch,
+            matched_tconst,
+            matched_primary_title,
+            matched_start_year,
+            imdb_average_rating,
+            imdb_num_votes,
+            match_confidence
+        FROM mart_letterboxd_movie_matches
+        WHERE film_year = {film_year}
+        ORDER BY activity_date DESC NULLS LAST, diary_id DESC;
     """,
 }
 
@@ -101,6 +124,14 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=20,
         help="Row limit for query templates that support it (default: 20).",
+    )
+    parser.add_argument(
+        "--film-year",
+        type=int,
+        help=(
+            "Filter queries by movie release year (film_year). "
+            "Required for --query film-year-entries."
+        ),
     )
     parser.add_argument(
         "--execution-mode",
@@ -153,7 +184,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--no-header",
         action="store_true",
-        help="Disable psql headers and aligned output for easier piping.",
+        help="Disable Rich table output and print raw psql rows for easier piping.",
     )
     return parser.parse_args()
 
@@ -162,78 +193,6 @@ def ensure_prerequisites(compose_file: Path, service: str) -> None:
     if shutil.which("docker") is None:
         print("Error: docker command not found in PATH.", file=sys.stderr)
         raise SystemExit(1)
-
-
-def ensure_direct_prerequisites() -> None:
-    if shutil.which("psql") is None:
-        print("Error: psql command not found in PATH.", file=sys.stderr)
-        raise SystemExit(1)
-
-
-def run_direct_query(args: argparse.Namespace, sql: str, psql_flags: list[str]) -> int:
-    ensure_direct_prerequisites()
-
-    command = [
-        "psql",
-        "-h",
-        args.host,
-        "-p",
-        str(args.port),
-        "-U",
-        args.user,
-        "-d",
-        args.db,
-        *psql_flags,
-        "-c",
-        sql,
-    ]
-
-    env = os.environ.copy()
-    password = env.get(args.password_env)
-    if password:
-        env["PGPASSWORD"] = password
-
-    print(
-        f"Running query '{args.query}' on {args.db} at {args.host}:{args.port} "
-        "using direct psql..."
-    )
-    print(f"SQL: {sql}\n")
-
-    result = subprocess.run(command, text=True, env=env, check=False)
-    return result.returncode
-
-
-def run_docker_query(
-    args: argparse.Namespace,
-    sql: str,
-    psql_flags: list[str],
-    compose_file: Path,
-) -> int:
-    ensure_prerequisites(compose_file=compose_file, service=args.service)
-
-    command = [
-        "docker",
-        "compose",
-        "-f",
-        str(compose_file),
-        "exec",
-        "-T",
-        args.service,
-        "psql",
-        "-U",
-        args.user,
-        "-d",
-        args.db,
-        *psql_flags,
-        "-c",
-        sql,
-    ]
-
-    print(f"Running query '{args.query}' on {args.db} via service {args.service}...")
-    print(f"SQL: {sql}\n")
-
-    result = subprocess.run(command, text=True, check=False)
-    return result.returncode
 
     if not compose_file.is_file():
         print(f"Error: compose file not found at {compose_file}", file=sys.stderr)
@@ -270,6 +229,173 @@ def run_docker_query(
         raise SystemExit(1)
 
 
+def ensure_direct_prerequisites() -> None:
+    if shutil.which("psql") is None:
+        print("Error: psql command not found in PATH.", file=sys.stderr)
+        raise SystemExit(1)
+
+
+def _column_display_name(column_name: str) -> str:
+    return column_name.replace("_", " ").title()
+
+
+def _column_style(column_name: str) -> tuple[str | None, str]:
+    name = column_name.lower()
+    if name in {"match_confidence"}:
+        return "cyan", "left"
+    if name in {"matched_tconst", "matched_primary_title", "film_name"}:
+        return "bright_cyan", "left"
+    if name in {
+        "total_rows",
+        "matched_rows",
+        "unmatched_rows",
+        "row_count",
+        "matched_entries",
+        "diary_watches",
+        "diary_rows",
+        "imdb_num_votes",
+        "film_year",
+        "matched_start_year",
+    }:
+        return "green", "right"
+    if name in {
+        "match_rate_pct",
+        "pct_of_total",
+        "letterboxd_rating",
+        "avg_letterboxd_rating",
+        "imdb_average_rating",
+        "avg_imdb_rating",
+        "rating_gap",
+    }:
+        return "magenta", "right"
+    if name in {"activity_date", "month"}:
+        return "blue", "left"
+    if name in {"rewatch"}:
+        return "yellow", "right"
+    return None, "left"
+
+
+def render_table(args: argparse.Namespace, csv_output: str) -> None:
+    reader = csv.DictReader(io.StringIO(csv_output))
+    fieldnames = reader.fieldnames or []
+    rows = list(reader)
+
+    title = f"Letterboxd Movie Matches ({args.query})"
+    if args.film_year is not None:
+        title += f" | film_year={args.film_year}"
+
+    console = Console()
+
+    if not fieldnames:
+        console.print("No columns returned by query.", style="yellow")
+        return
+
+    table = Table(title=title)
+    for field in fieldnames:
+        style, justify = _column_style(field)
+        table.add_column(_column_display_name(field), style=style, justify=justify)
+
+    for row in rows:
+        table.add_row(*[(row.get(field) or "") for field in fieldnames])
+
+    if not rows:
+        console.print("No rows returned for this query.", style="yellow")
+        return
+
+    console.print(table)
+    console.print(f"Showing [bold]{len(rows)}[/bold] row(s) (limit={args.limit}).")
+
+
+def run_direct_query(args: argparse.Namespace, sql: str, psql_flags: list[str]) -> int:
+    ensure_direct_prerequisites()
+
+    command = [
+        "psql",
+        "-h",
+        args.host,
+        "-p",
+        str(args.port),
+        "-U",
+        args.user,
+        "-d",
+        args.db,
+        "--csv",
+        *psql_flags,
+        "-c",
+        sql,
+    ]
+
+    env = os.environ.copy()
+    password = env.get(args.password_env)
+    if password:
+        env["PGPASSWORD"] = password
+
+    print(
+        f"Running query '{args.query}' on {args.db} at {args.host}:{args.port} "
+        "using direct psql..."
+    )
+    print(f"SQL: {sql}\n")
+
+    result = subprocess.run(command, text=True, env=env, capture_output=True, check=False)
+    if result.returncode != 0:
+        stderr = (result.stderr or "").strip()
+        if stderr:
+            print(stderr, file=sys.stderr)
+        return result.returncode
+
+    if args.no_header:
+        print(result.stdout, end="")
+        return 0
+
+    render_table(args=args, csv_output=result.stdout)
+    return 0
+
+
+def run_docker_query(
+    args: argparse.Namespace,
+    sql: str,
+    psql_flags: list[str],
+    compose_file: Path,
+) -> int:
+    ensure_prerequisites(compose_file=compose_file, service=args.service)
+
+    command = [
+        "docker",
+        "compose",
+        "-f",
+        str(compose_file),
+        "exec",
+        "-T",
+        args.service,
+        "psql",
+        "-U",
+        args.user,
+        "-d",
+        args.db,
+        "--csv",
+        *psql_flags,
+        "-c",
+        sql,
+    ]
+
+    print(f"Running query '{args.query}' on {args.db} via service {args.service}...")
+    print(f"SQL: {sql}\n")
+
+    result = subprocess.run(command, text=True, capture_output=True, check=False)
+    if result.returncode != 0:
+        stderr = (result.stderr or "").strip()
+        if stderr:
+            print(stderr, file=sys.stderr)
+        return result.returncode
+
+    if args.no_header:
+        print(result.stdout, end="")
+        return 0
+
+    render_table(args=args, csv_output=result.stdout)
+    return 0
+
+
 def main() -> int:
     args = parse_args()
     if args.limit <= 0:
@@ -278,12 +404,26 @@ def main() -> int:
     if args.port <= 0:
         print("Error: --port must be > 0", file=sys.stderr)
         return 1
+    if args.film_year is not None and (args.film_year < 1870 or args.film_year > 2100):
+        print("Error: --film-year must be between 1870 and 2100", file=sys.stderr)
+        return 1
+    if args.query == "film-year-entries" and args.film_year is None:
+        print("Error: --query film-year-entries requires --film-year", file=sys.stderr)
+        return 1
 
-    sql = QUERY_SQL[args.query].format(limit=args.limit).strip()
+    recent_matches_filter = ""
+    if args.film_year is not None and args.query == "recent-matches":
+        recent_matches_filter = f"WHERE film_year = {args.film_year}"
+
+    sql = QUERY_SQL[args.query].format(
+        limit=args.limit,
+        film_year=args.film_year,
+        recent_matches_filter=recent_matches_filter,
+    ).strip()
 
     psql_flags = ["-P", "pager=off"]
     if args.no_header:
-        psql_flags.extend(["-A", "-t"])
+        psql_flags.extend(["-t"])
 
     if args.execution_mode == "docker":
         compose_file = Path(args.compose_file).expanduser().resolve()
