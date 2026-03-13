@@ -1,5 +1,24 @@
 # Airflow (local)
 
+## Accessing Airflow by hostname
+
+The Airflow API/UI is published on host port `8080` by default and advertises
+`http://airflow.home.lab` as its public URL.
+
+To make that hostname resolve to this Docker host, add one of these outside the repo:
+
+- A DNS record for `airflow.home.lab` pointing at the host running this stack.
+- A local `/etc/hosts` entry such as `127.0.0.1 airflow.home.lab` if you only need access from the same machine.
+
+If you already have a reverse proxy for `airflow.home.lab`, point it at this stack on port `8080`.
+
+You can override the defaults with `.env`:
+
+```env
+AIRFLOW_HOST=airflow.home.lab
+AIRFLOW_WEB_PORT=8080
+```
+
 # TODO
 
 * make sure editors exist in movie credits mart. update movie credits query script to include editor column

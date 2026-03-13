@@ -29,6 +29,10 @@
 #                                Default: 50000
 # AIRFLOW_PROJ_DIR             - Base path to which all the files will be volumed.
 #                                Default: .
+# AIRFLOW_HOST                 - Public hostname used to reach the Airflow UI/API.
+#                                Default: airflow.home.lab
+# AIRFLOW_WEB_PORT             - Host port published for the Airflow UI/API.
+#                                Default: 8080
 # Those configurations are useful mostly in case of standalone testing/running Airflow in test/try-out mode
 #
 # _AIRFLOW_WWW_USER_USERNAME   - Username for the administrator account (if requested).
@@ -64,6 +68,7 @@ x-airflow-common:
     AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: 'true'
     AIRFLOW__CORE__LOAD_EXAMPLES: 'true'
     AIRFLOW__CORE__EXECUTION_API_SERVER_URL: 'http://airflow-apiserver:8080/execution/'
+    AIRFLOW__WEBSERVER__BASE_URL: "http://${AIRFLOW_HOST:-airflow.home.lab}"
     AIRFLOW__METRICS__STATSD_ON: 'true'
     AIRFLOW__METRICS__STATSD_HOST: statsd-exporter
     AIRFLOW__METRICS__STATSD_PORT: 9125
@@ -137,7 +142,7 @@ services:
     <<: *airflow-common
     command: api-server
     ports:
-      - "8080:8080"
+      - "${AIRFLOW_WEB_PORT:-8080}:8080"
     healthcheck:
       test: ["CMD", "curl", "--fail", "http://localhost:8080/api/v2/version"]
       interval: 30s
