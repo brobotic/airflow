@@ -128,6 +128,8 @@ def create_table():
             start_year           INTEGER,
             directors_nconsts    TEXT,
             directors_names      TEXT,
+            actors_nconsts       TEXT,
+            actors_names         TEXT,
             dop_nconsts          TEXT,
             dop_names            TEXT,
             editor_nconsts       TEXT,
@@ -142,6 +144,8 @@ def create_table():
     )
 
     # Keep existing deployments forward-compatible when new credit columns are introduced.
+    hook.run(f"ALTER TABLE {TABLE} ADD COLUMN IF NOT EXISTS actors_nconsts TEXT;")
+    hook.run(f"ALTER TABLE {TABLE} ADD COLUMN IF NOT EXISTS actors_names TEXT;")
     hook.run(f"ALTER TABLE {TABLE} ADD COLUMN IF NOT EXISTS editor_nconsts TEXT;")
     hook.run(f"ALTER TABLE {TABLE} ADD COLUMN IF NOT EXISTS editor_names TEXT;")
     hook.run(f"ALTER TABLE {TABLE} ADD COLUMN IF NOT EXISTS composer_nconsts TEXT;")
@@ -150,7 +154,7 @@ def create_table():
 
 
 def extract_and_load():
-    """Build per-movie credits mart enriched with director, DoP, editor, and composer data."""
+    """Build per-movie credits mart enriched with director, actor, DoP, editor, and composer data."""
     hook = PostgresHook(postgres_conn_id=CONN_ID)
     has_ratings = _table_exists(hook, "title_ratings")
 
@@ -189,6 +193,23 @@ def extract_and_load():
             FROM directors_expanded d
             LEFT JOIN name_basics n ON n.nconst = d.director_nconst
             GROUP BY d.tconst
+        ),
+        actors_expanded AS (
+            SELECT DISTINCT
+                p.tconst,
+                p.nconst AS actor_nconst
+            FROM title_principals p
+            WHERE p.nconst IS NOT NULL
+              AND p.category IN ('actor', 'actress')
+        ),
+        actors_agg AS (
+            SELECT
+                a.tconst,
+                string_agg(DISTINCT a.actor_nconst, ',' ORDER BY a.actor_nconst) AS actors_nconsts,
+                string_agg(DISTINCT n.primary_name, ', ' ORDER BY n.primary_name) AS actors_names
+            FROM actors_expanded a
+            LEFT JOIN name_basics n ON n.nconst = a.actor_nconst
+            GROUP BY a.tconst
         ),
         dop_expanded AS (
             SELECT DISTINCT
@@ -257,6 +278,8 @@ def extract_and_load():
             start_year,
             directors_nconsts,
             directors_names,
+            actors_nconsts,
+            actors_names,
             dop_nconsts,
             dop_names,
             editor_nconsts,
@@ -274,6 +297,8 @@ def extract_and_load():
             mb.start_year,
             da.directors_nconsts,
             da.directors_names,
+            aa.actors_nconsts,
+            aa.actors_names,
             dopa.dop_nconsts,
             dopa.dop_names,
             ea.editor_nconsts,
@@ -285,6 +310,7 @@ def extract_and_load():
             now() AS last_refreshed_at
         FROM movie_base mb
         LEFT JOIN directors_agg da ON da.tconst = mb.tconst
+        LEFT JOIN actors_agg aa ON aa.tconst = mb.tconst
         LEFT JOIN dop_agg dopa ON dopa.tconst = mb.tconst
         LEFT JOIN editor_agg ea ON ea.tconst = mb.tconst
         LEFT JOIN composer_agg ca ON ca.tconst = mb.tconst
@@ -305,12 +331,15 @@ def extract_and_load():
 
 
 def verify_load():
-    """Log row counts and top movies with director/DoP/editor/composer credits."""
+    """Log row counts and top movies with director/actor/DoP/editor/composer credits."""
     hook = PostgresHook(postgres_conn_id=CONN_ID)
 
     total = hook.get_first(f"SELECT COUNT(*) FROM {TABLE};")[0]
     with_directors = hook.get_first(
         f"SELECT COUNT(*) FROM {TABLE} WHERE directors_nconsts IS NOT NULL AND directors_nconsts <> '';"
+    )[0]
+    with_actors = hook.get_first(
+        f"SELECT COUNT(*) FROM {TABLE} WHERE actors_nconsts IS NOT NULL AND actors_nconsts <> '';"
     )[0]
     with_dop = hook.get_first(
         f"SELECT COUNT(*) FROM {TABLE} WHERE dop_nconsts IS NOT NULL AND dop_nconsts <> '';"
@@ -324,13 +353,14 @@ def verify_load():
 
     logging.info("Total rows: %d", total)
     logging.info("Rows with director credits: %d", with_directors)
+    logging.info("Rows with actor credits: %d", with_actors)
     logging.info("Rows with DoP credits: %d", with_dop)
     logging.info("Rows with editor credits: %d", with_editor)
     logging.info("Rows with composer credits: %d", with_composer)
 
     sample = hook.get_records(
         f"""
-        SELECT primary_title, start_year, directors_names, dop_names, editor_names, composer_names, average_rating, num_votes
+        SELECT primary_title, start_year, directors_names, actors_names, dop_names, editor_names, composer_names, average_rating, num_votes
         FROM {TABLE}
         ORDER BY num_votes DESC NULLS LAST, average_rating DESC NULLS LAST
         LIMIT 10;
@@ -343,6 +373,7 @@ def verify_load():
         "row_count": total,
         "sample_count": len(sample),
         "with_director_count": with_directors,
+        "with_actor_count": with_actors,
         "with_dop_count": with_dop,
         "with_editor_count": with_editor,
         "with_composer_count": with_composer,
@@ -420,6 +451,8 @@ def export_to_elasticsearch():
                     start_year,
                     directors_nconsts,
                     directors_names,
+                    actors_nconsts,
+                    actors_names,
                     dop_nconsts,
                     dop_names,
                     editor_nconsts,
@@ -446,6 +479,8 @@ def export_to_elasticsearch():
                         start_year,
                         directors_nconsts,
                         directors_names,
+                        actors_nconsts,
+                        actors_names,
                         dop_nconsts,
                         dop_names,
                         editor_nconsts,
@@ -467,6 +502,8 @@ def export_to_elasticsearch():
                             "start_year": start_year,
                             "directors_nconsts": directors_nconsts,
                             "directors_names": directors_names,
+                            "actors_nconsts": actors_nconsts,
+                            "actors_names": actors_names,
                             "dop_nconsts": dop_nconsts,
                             "dop_names": dop_names,
                             "editor_nconsts": editor_nconsts,

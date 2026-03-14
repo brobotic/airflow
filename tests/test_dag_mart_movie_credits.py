@@ -29,7 +29,7 @@ def test_table_exists_uses_information_schema(monkeypatch):
     exists = module._table_exists(hook, "title_principals")
 
     assert exists is True
-    sql, params = hook.get_first_calls[0]
+    sql, params = hook.get_first_calls[0] # type: ignore
     assert "information_schema.tables" in sql
     assert params == ("title_principals",)
 
@@ -91,8 +91,8 @@ class FakeHookCreateTable:
         self.run_calls.append((sql, parameters))
 
 
-def test_create_table_adds_composer_columns(monkeypatch):
-    """Ensure composer columns are created/added for forward-compatible deployments."""
+def test_create_table_adds_actor_and_composer_columns(monkeypatch):
+    """Ensure actor/composer columns are created for forward-compatible deployments."""
     created = {}
 
     def fake_hook_ctor(postgres_conn_id):
@@ -104,6 +104,8 @@ def test_create_table_adds_composer_columns(monkeypatch):
     module.create_table()
 
     run_sql = "\n".join(sql for sql, _ in created["hook"].run_calls)
+    assert "actors_nconsts" in run_sql
+    assert "actors_names" in run_sql
     assert "composer_nconsts" in run_sql
     assert "composer_names" in run_sql
 
@@ -117,6 +119,8 @@ class FakeHookVerify:
             return (10,)
         if "directors_nconsts" in sql:
             return (8,)
+        if "actors_nconsts" in sql:
+            return (9,)
         if "dop_nconsts" in sql:
             return (7,)
         if "editor_nconsts" in sql:
@@ -131,6 +135,7 @@ class FakeHookVerify:
                 "Movie A",
                 2000,
                 "Director A",
+                "Actor A",
                 "DoP A",
                 "Editor A",
                 "Composer A",
@@ -140,14 +145,151 @@ class FakeHookVerify:
         ]
 
 
-def test_verify_load_includes_composer_count(monkeypatch):
-    """Ensure verify_load returns composer coverage metrics."""
+def test_verify_load_includes_actor_and_composer_counts(monkeypatch):
+    """Ensure verify_load returns actor/composer coverage metrics."""
     monkeypatch.setattr(module, "PostgresHook", FakeHookVerify)
 
     result = module.verify_load()
 
     assert result["row_count"] == 10
     assert result["with_director_count"] == 8
+    assert result["with_actor_count"] == 9
     assert result["with_dop_count"] == 7
     assert result["with_editor_count"] == 6
     assert result["with_composer_count"] == 5
+
+
+def test_extract_and_load_sql_includes_actor_aggregation(monkeypatch):
+    """Ensure mart load SQL aggregates actor/actress principals into actor columns."""
+
+    class FakeHookExtract:
+        def __init__(self, postgres_conn_id):
+            self.postgres_conn_id = postgres_conn_id
+            self.run_calls = []
+
+        def get_first(self, sql, parameters=None):
+            if "information_schema.tables" in sql and parameters == ("title_ratings",):
+                return (1,)
+            return (1,)
+
+        def run(self, sql, parameters=None):
+            self.run_calls.append((sql, parameters))
+
+    created = {}
+
+    def fake_hook_ctor(postgres_conn_id):
+        hook = FakeHookExtract(postgres_conn_id)
+        created["hook"] = hook
+        return hook
+
+    monkeypatch.setattr(module, "PostgresHook", fake_hook_ctor)
+
+    module.extract_and_load()
+
+    run_sql = "\n".join(sql for sql, _ in created["hook"].run_calls)
+    assert "actors_expanded" in run_sql
+    assert "p.category IN ('actor', 'actress')" in run_sql
+    assert "actors_nconsts" in run_sql
+    assert "actors_names" in run_sql
+
+
+def test_export_to_elasticsearch_includes_actor_fields(monkeypatch):
+    """Ensure Elasticsearch export includes actor fields in source documents."""
+
+    class FakeIndices:
+        def exists(self, index):
+            return False
+
+        def create(self, index):
+            return None
+
+        def refresh(self, index):
+            return None
+
+    class FakeClient:
+        def __init__(self):
+            self.indices = FakeIndices()
+
+        def close(self):
+            return None
+
+    class FakeCursor:
+        def __init__(self):
+            self.executed_sql = []
+            self.rows = [
+                (
+                    "tt1",
+                    "Movie A",
+                    "Movie A",
+                    2000,
+                    "nm1",
+                    "Director A",
+                    "nm2,nm3",
+                    "Actor A, Actor B",
+                    "nm4",
+                    "DoP A",
+                    "nm5",
+                    "Editor A",
+                    "nm6",
+                    "Composer A",
+                    None,
+                    123,
+                    None,
+                )
+            ]
+            self.closed = False
+            self.itersize = None
+
+        def execute(self, sql):
+            self.executed_sql.append(sql)
+
+        def fetchmany(self, size):
+            if self.rows:
+                rows, self.rows = self.rows, []
+                return rows
+            return []
+
+        def close(self):
+            self.closed = True
+
+    class FakeConn:
+        def __init__(self):
+            self.cursor_instance = FakeCursor()
+            self.closed = False
+
+        def cursor(self, name=None):
+            return self.cursor_instance
+
+        def close(self):
+            self.closed = True
+
+    class FakeHookExport:
+        def __init__(self, postgres_conn_id):
+            self.postgres_conn_id = postgres_conn_id
+            self.conn = FakeConn()
+
+        def get_first(self, sql, parameters=None):
+            if "COUNT(*) FROM mart_movie_credits;" in sql:
+                return (1,)
+            return (0,)
+
+        def get_conn(self):
+            return self.conn
+
+    captured = {}
+
+    def fake_parallel_bulk(client, actions, **kwargs):
+        captured["actions"] = list(actions)
+        for _ in captured["actions"]:
+            yield True, {}
+
+    monkeypatch.setattr(module, "PostgresHook", FakeHookExport)
+    monkeypatch.setattr(module, "_create_elasticsearch_client", lambda: FakeClient())
+    monkeypatch.setattr(module, "_get_elasticsearch_modules", lambda: (None, type("Helpers", (), {"parallel_bulk": staticmethod(fake_parallel_bulk)})))
+
+    result = module.export_to_elasticsearch()
+
+    assert result["indexed"] == 1
+    assert result["errors"] == 0
+    assert captured["actions"][0]["_source"]["actors_nconsts"] == "nm2,nm3"
+    assert captured["actions"][0]["_source"]["actors_names"] == "Actor A, Actor B"

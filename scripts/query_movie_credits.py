@@ -23,14 +23,18 @@ load_dotenv()
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Query Elasticsearch movie credits and print title/year/director/DoP/editor/composer "
-            "for movies by a specific director, cinematographer, editor, or composer."
+            "Query Elasticsearch movie credits and print title/year/director/actor/DoP/editor/composer "
+            "for movies by a specific director, actor, cinematographer, editor, or composer."
         )
     )
     person_group = parser.add_mutually_exclusive_group(required=True)
     person_group.add_argument(
         "--director",
         help="Director name to search for, e.g. 'Christopher Nolan'",
+    )
+    person_group.add_argument(
+        "--actor",
+        help="Actor name to search for, e.g. 'Toshiro Mifune'",
     )
     person_group.add_argument(
         "--cinematographer",
@@ -85,6 +89,7 @@ def query_movies_by_person(
             "primary_title",
             "start_year",
             "directors_names",
+            "actors_names",
             "dop_names",
             "editor_names",
             "composer_names",
@@ -113,6 +118,7 @@ def query_movies_by_person(
                 "title": source.get("primary_title") or "",
                 "year": source.get("start_year"),
                 "director": source.get("directors_names") or "",
+                "actor": source.get("actors_names") or "",
                 "dop": source.get("dop_names") or "",
                 "editor": source.get("editor_names") or "",
                 "composer": source.get("composer_names") or "",
@@ -129,6 +135,7 @@ def render_table(rows: list[dict[str, Any]], label: str, person_name: str) -> No
     table.add_column("Title", style="cyan")
     table.add_column("Year", justify="right")
     table.add_column("Director", style="green")
+    table.add_column("Actor", style="red")
     table.add_column("DoP", style="magenta")
     table.add_column("Editor", style="yellow")
     table.add_column("Composer", style="blue")
@@ -139,6 +146,7 @@ def render_table(rows: list[dict[str, Any]], label: str, person_name: str) -> No
             row["title"],
             year,
             row["director"],
+            row["actor"],
             row["dop"],
             row["editor"],
             row["composer"],
@@ -158,6 +166,10 @@ def main() -> int:
         person_name = args.director
         search_field = "directors_names"
         label = "director"
+    elif args.actor:
+        person_name = args.actor
+        search_field = "actors_names"
+        label = "actor"
     elif args.cinematographer:
         person_name = args.cinematographer
         search_field = "dop_names"
