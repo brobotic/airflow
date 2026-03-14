@@ -234,6 +234,10 @@ python scripts/query_letterboxd_diary_mart.py --query film-year-entries --film-y
 # specific movie diary entries
 python scripts/query_letterboxd_diary_mart.py --query movie-entries --film-name "The Matrix"
 python scripts/query_letterboxd_diary_mart.py --query movie-entries --film-name "Alien" --film-year 1979
+# movies with no rewatches (optional year/release-year filters)
+python scripts/query_letterboxd_diary_mart.py --query never-rewatched-movies --limit 50
+python scripts/query_letterboxd_diary_mart.py --query never-rewatched-movies --year 2024 --limit 50
+python scripts/query_letterboxd_diary_mart.py --query never-rewatched-movies --year 2024 --film-year 1999 --limit 50
 ```
 
 Remote mode env vars:
@@ -261,6 +265,7 @@ Available `--query` values:
 - `year-overview`
 - `film-year-entries`
 - `movie-entries`
+- `never-rewatched-movies`
 
 For the movie-level join mart, use `scripts/query_letterboxd_movie_matches.py`.
 
@@ -334,7 +339,15 @@ python scripts/query_letterboxd_diary_mart.py --query movie-entries --film-name 
 python scripts/query_letterboxd_diary_mart.py --query movie-entries --film-name "Alien" --film-year 1979
 ```
 
-2. Query related movie credits by person role.
+2. Find titles that have never been rewatched.
+
+```bash
+python scripts/query_letterboxd_diary_mart.py --query never-rewatched-movies --limit 50
+python scripts/query_letterboxd_diary_mart.py --query never-rewatched-movies --year 2024 --limit 50
+python scripts/query_letterboxd_diary_mart.py --query never-rewatched-movies --year 2024 --film-year 1999 --limit 50
+```
+
+3. Query related movie credits by person role.
 
 ```bash
 python scripts/query_movie_credits.py --actor "Sigourney Weaver"

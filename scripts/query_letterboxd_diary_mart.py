@@ -175,6 +175,31 @@ QUERY_SQL = {
         {movie_entries_filter}
         ORDER BY COALESCE(watched_date, entry_date) DESC NULLS LAST, diary_id DESC;
     """,
+    "never-rewatched-movies": """
+        WITH base AS (
+            SELECT
+                COALESCE(watched_date, entry_date) AS activity_date,
+                film_name,
+                film_year,
+                rating,
+                rewatch
+            FROM letterboxd_diary
+            {never_rewatched_filter}
+        )
+        SELECT
+            film_name,
+            film_year,
+            COUNT(*)::INTEGER AS diary_entries,
+            ROUND(AVG(rating)::numeric, 2) AS avg_rating,
+            MIN(activity_date) AS first_watch_date,
+            MAX(activity_date) AS last_watch_date
+        FROM base
+        WHERE COALESCE(trim(film_name), '') <> ''
+        GROUP BY film_name, film_year
+        HAVING SUM(CASE WHEN COALESCE(rewatch, FALSE) THEN 1 ELSE 0 END) = 0
+        ORDER BY last_watch_date DESC NULLS LAST, diary_entries DESC, film_name
+        LIMIT {limit};
+    """,
 }
 
 
@@ -527,6 +552,18 @@ def main() -> int:
             movie_entries_filters.append(f"film_year = {args.film_year}")
         movie_entries_filter = "WHERE " + " AND ".join(movie_entries_filters)
 
+    never_rewatched_filters: list[str] = []
+    if args.year is not None and args.query == "never-rewatched-movies":
+        never_rewatched_filters.append(
+            f"EXTRACT(YEAR FROM COALESCE(watched_date, entry_date)) = {args.year}"
+        )
+    if args.film_year is not None and args.query == "never-rewatched-movies":
+        never_rewatched_filters.append(f"film_year = {args.film_year}")
+
+    never_rewatched_filter = ""
+    if never_rewatched_filters:
+        never_rewatched_filter = "WHERE " + " AND ".join(never_rewatched_filters)
+
     sql = QUERY_SQL[args.query].format(
         limit=args.limit,
         year=args.year,
@@ -535,6 +572,7 @@ def main() -> int:
         recent_entries_filter=recent_entries_filter,
         raw_year_filter=raw_year_filter,
         movie_entries_filter=movie_entries_filter,
+        never_rewatched_filter=never_rewatched_filter,
     ).strip()
 
     psql_flags = ["-P", "pager=off"]

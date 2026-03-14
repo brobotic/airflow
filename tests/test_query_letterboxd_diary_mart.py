@@ -77,3 +77,51 @@ def test_main_builds_movie_entries_sql_with_escaped_title(monkeypatch):
     assert "lower(trim(film_name)) = lower(trim('Schindler''s List'))" in captured["sql"]
     assert "film_year = 1993" in captured["sql"]
     assert captured["psql_flags"] == ["-P", "pager=off"]
+
+
+def test_parse_args_supports_never_rewatched_movies(monkeypatch):
+    monkeypatch.setattr(
+        module.sys,
+        "argv",
+        [
+            "query_letterboxd_diary_mart.py",
+            "--query",
+            "never-rewatched-movies",
+            "--year",
+            "2024",
+            "--film-year",
+            "1999",
+        ],
+    )
+
+    args = module.parse_args()
+
+    assert args.query == "never-rewatched-movies"
+    assert args.year == 2024
+    assert args.film_year == 1999
+
+
+def test_main_builds_never_rewatched_movies_sql_with_filters(monkeypatch):
+    args = _base_args(
+        query="never-rewatched-movies",
+        year=2024,
+        film_year=1999,
+    )
+    monkeypatch.setattr(module, "parse_args", lambda: args)
+
+    captured = {}
+
+    def fake_run_direct_query(*, args, sql, psql_flags):
+        captured["sql"] = sql
+        captured["psql_flags"] = psql_flags
+        return 0
+
+    monkeypatch.setattr(module, "run_direct_query", fake_run_direct_query)
+
+    exit_code = module.main()
+
+    assert exit_code == 0
+    assert "EXTRACT(YEAR FROM COALESCE(watched_date, entry_date)) = 2024" in captured["sql"]
+    assert "film_year = 1999" in captured["sql"]
+    assert "HAVING SUM(CASE WHEN COALESCE(rewatch, FALSE) THEN 1 ELSE 0 END) = 0" in captured["sql"]
+    assert captured["psql_flags"] == ["-P", "pager=off"]
