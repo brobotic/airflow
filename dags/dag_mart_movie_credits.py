@@ -4,7 +4,7 @@ import time
 from datetime import datetime
 from functools import partial
 from importlib import import_module
-from typing import Any
+from typing import Any, Callable
 
 from airflow import DAG
 from airflow.operators.python import PythonOperator
@@ -42,6 +42,11 @@ ES_QUEUE_SIZE = int(os.getenv("ELASTICSEARCH_QUEUE_SIZE", "2"))
 ES_REQUEST_TIMEOUT = int(os.getenv("ELASTICSEARCH_REQUEST_TIMEOUT", "120"))
 ES_FETCH_SIZE = int(os.getenv("ELASTICSEARCH_FETCH_SIZE", "2000"))
 ES_PROGRESS_EVERY = int(os.getenv("ELASTICSEARCH_PROGRESS_EVERY", "10000"))
+ES_CLIENT_MAX_RETRIES = int(os.getenv("ELASTICSEARCH_CLIENT_MAX_RETRIES", "3"))
+ES_BULK_RETRY_ATTEMPTS = int(os.getenv("ELASTICSEARCH_BULK_RETRY_ATTEMPTS", "5"))
+ES_BULK_RETRY_BACKOFF_SECONDS = float(
+    os.getenv("ELASTICSEARCH_BULK_RETRY_BACKOFF_SECONDS", "5")
+)
 ES_FAST_INDEX_MODE = os.getenv("ELASTICSEARCH_FAST_INDEX_MODE", "false").lower() in {
     "1",
     "true",
@@ -70,10 +75,151 @@ def _create_elasticsearch_client() -> Any:
 
     Elasticsearch, _ = _get_elasticsearch_modules()
     if api_key:
-        return Elasticsearch(hosts=[host], api_key=api_key)
+        return Elasticsearch(
+            hosts=[host],
+            api_key=api_key,
+            request_timeout=ES_REQUEST_TIMEOUT,
+            max_retries=ES_CLIENT_MAX_RETRIES,
+            retry_on_timeout=True,
+        )
     if username and password:
-        return Elasticsearch(hosts=[host], basic_auth=(username, password))
-    return Elasticsearch(hosts=[host])
+        return Elasticsearch(
+            hosts=[host],
+            basic_auth=(username, password),
+            request_timeout=ES_REQUEST_TIMEOUT,
+            max_retries=ES_CLIENT_MAX_RETRIES,
+            retry_on_timeout=True,
+        )
+    return Elasticsearch(
+        hosts=[host],
+        request_timeout=ES_REQUEST_TIMEOUT,
+        max_retries=ES_CLIENT_MAX_RETRIES,
+        retry_on_timeout=True,
+    )
+
+
+def _get_elasticsearch_retryable_exceptions() -> tuple[type[BaseException], ...]:
+    transport_module = import_module("elastic_transport")
+    return (
+        transport_module.ConnectionError,
+        transport_module.ConnectionTimeout,
+    )
+
+
+def _run_with_retry(
+    operation_name: str,
+    operation: Callable[[], Any],
+    retryable_exceptions: tuple[type[BaseException], ...],
+) -> Any:
+    for attempt in range(1, ES_BULK_RETRY_ATTEMPTS + 1):
+        try:
+            return operation()
+        except retryable_exceptions as exc:
+            if attempt >= ES_BULK_RETRY_ATTEMPTS:
+                logging.error(
+                    "Elasticsearch %s failed after %d attempts: %s",
+                    operation_name,
+                    attempt,
+                    exc,
+                )
+                raise
+
+            backoff_seconds = ES_BULK_RETRY_BACKOFF_SECONDS * (2 ** (attempt - 1))
+            logging.warning(
+                "Elasticsearch %s failed on attempt %d/%d. Retrying in %.1fs. Error: %s",
+                operation_name,
+                attempt,
+                ES_BULK_RETRY_ATTEMPTS,
+                backoff_seconds,
+                exc,
+            )
+            time.sleep(backoff_seconds)
+
+
+def _build_elasticsearch_action(row: tuple[Any, ...]) -> dict[str, Any]:
+    (
+        tconst,
+        primary_title,
+        original_title,
+        start_year,
+        directors_nconsts,
+        directors_names,
+        actors_nconsts,
+        actors_names,
+        dop_nconsts,
+        dop_names,
+        editor_nconsts,
+        editor_names,
+        composer_nconsts,
+        composer_names,
+        average_rating,
+        num_votes,
+        last_refreshed_at,
+    ) = row
+
+    return {
+        "_index": ES_INDEX,
+        "_id": tconst,
+        "_source": {
+            "tconst": tconst,
+            "primary_title": primary_title,
+            "original_title": original_title,
+            "start_year": start_year,
+            "directors_nconsts": directors_nconsts,
+            "directors_names": directors_names,
+            "actors_nconsts": actors_nconsts,
+            "actors_names": actors_names,
+            "dop_nconsts": dop_nconsts,
+            "dop_names": dop_names,
+            "editor_nconsts": editor_nconsts,
+            "editor_names": editor_names,
+            "composer_nconsts": composer_nconsts,
+            "composer_names": composer_names,
+            "average_rating": average_rating,
+            "num_votes": num_votes,
+            "last_refreshed_at": last_refreshed_at.isoformat() if last_refreshed_at else None,
+        },
+    }
+
+
+def _iter_elasticsearch_actions(hook: PostgresHook):
+    conn = hook.get_conn()
+    cursor = conn.cursor(name="mart_movie_credits_export")
+    cursor.itersize = ES_FETCH_SIZE
+    try:
+        cursor.execute(
+            f"""
+            SELECT
+                tconst,
+                primary_title,
+                original_title,
+                start_year,
+                directors_nconsts,
+                directors_names,
+                actors_nconsts,
+                actors_names,
+                dop_nconsts,
+                dop_names,
+                editor_nconsts,
+                editor_names,
+                composer_nconsts,
+                composer_names,
+                average_rating,
+                num_votes,
+                last_refreshed_at
+            FROM {TABLE};
+            """
+        )
+
+        while True:
+            rows = cursor.fetchmany(ES_FETCH_SIZE)
+            if not rows:
+                break
+
+            yield [_build_elasticsearch_action(row) for row in rows]
+    finally:
+        cursor.close()
+        conn.close()
 
 
 def _format_duration(seconds: float) -> str:
@@ -392,7 +538,7 @@ def export_to_elasticsearch():
         else "none"
     )
     logging.info(
-        "Elasticsearch export settings: host=%s index=%s chunk_size=%d max_chunk_bytes=%d thread_count=%d queue_size=%d fetch_size=%d request_timeout=%ds progress_every=%d fast_index_mode=%s auth=%s",
+        "Elasticsearch export settings: host=%s index=%s chunk_size=%d max_chunk_bytes=%d thread_count=%d queue_size=%d fetch_size=%d request_timeout=%ds progress_every=%d fast_index_mode=%s client_max_retries=%d bulk_retry_attempts=%d bulk_retry_backoff=%.1fs auth=%s",
         es_host,
         ES_INDEX,
         ES_CHUNK_SIZE,
@@ -403,6 +549,9 @@ def export_to_elasticsearch():
         ES_REQUEST_TIMEOUT,
         ES_PROGRESS_EVERY,
         ES_FAST_INDEX_MODE,
+        ES_CLIENT_MAX_RETRIES,
+        ES_BULK_RETRY_ATTEMPTS,
+        ES_BULK_RETRY_BACKOFF_SECONDS,
         auth_mode,
     )
 
@@ -413,113 +562,11 @@ def export_to_elasticsearch():
         return {"indexed": 0, "errors": 0, "index": ES_INDEX}
 
     _, es_helpers = _get_elasticsearch_modules()
+    retryable_exceptions = _get_elasticsearch_retryable_exceptions()
     client = _create_elasticsearch_client()
-
-    if client.indices.exists(index=ES_INDEX):
-        client.indices.delete(index=ES_INDEX)
-
-    client.indices.create(index=ES_INDEX)
 
     original_refresh_interval = None
     original_replicas = None
-
-    if ES_FAST_INDEX_MODE:
-        settings = client.indices.get_settings(index=ES_INDEX)
-        index_settings = settings.get(ES_INDEX, {}).get("settings", {}).get("index", {})
-        original_refresh_interval = index_settings.get("refresh_interval")
-        original_replicas = index_settings.get("number_of_replicas")
-
-        client.indices.put_settings(
-            index=ES_INDEX,
-            settings={
-                "refresh_interval": "-1",
-                "number_of_replicas": 0,
-            },
-        )
-
-    def actions():
-        conn = hook.get_conn()
-        cursor = conn.cursor(name="mart_movie_credits_export")
-        cursor.itersize = ES_FETCH_SIZE
-        try:
-            cursor.execute(
-                f"""
-                SELECT
-                    tconst,
-                    primary_title,
-                    original_title,
-                    start_year,
-                    directors_nconsts,
-                    directors_names,
-                    actors_nconsts,
-                    actors_names,
-                    dop_nconsts,
-                    dop_names,
-                    editor_nconsts,
-                    editor_names,
-                    composer_nconsts,
-                    composer_names,
-                    average_rating,
-                    num_votes,
-                    last_refreshed_at
-                FROM {TABLE};
-                """
-            )
-
-            while True:
-                batch = cursor.fetchmany(ES_FETCH_SIZE)
-                if not batch:
-                    break
-
-                for row in batch:
-                    (
-                        tconst,
-                        primary_title,
-                        original_title,
-                        start_year,
-                        directors_nconsts,
-                        directors_names,
-                        actors_nconsts,
-                        actors_names,
-                        dop_nconsts,
-                        dop_names,
-                        editor_nconsts,
-                        editor_names,
-                        composer_nconsts,
-                        composer_names,
-                        average_rating,
-                        num_votes,
-                        last_refreshed_at,
-                    ) = row
-
-                    yield {
-                        "_index": ES_INDEX,
-                        "_id": tconst,
-                        "_source": {
-                            "tconst": tconst,
-                            "primary_title": primary_title,
-                            "original_title": original_title,
-                            "start_year": start_year,
-                            "directors_nconsts": directors_nconsts,
-                            "directors_names": directors_names,
-                            "actors_nconsts": actors_nconsts,
-                            "actors_names": actors_names,
-                            "dop_nconsts": dop_nconsts,
-                            "dop_names": dop_names,
-                            "editor_nconsts": editor_nconsts,
-                            "editor_names": editor_names,
-                            "composer_nconsts": composer_nconsts,
-                            "composer_names": composer_names,
-                            "average_rating": average_rating,
-                            "num_votes": num_votes,
-                            "last_refreshed_at": (
-                                last_refreshed_at.isoformat() if last_refreshed_at else None
-                            ),
-                        },
-                    }
-        finally:
-            cursor.close()
-            conn.close()
 
     indexed = 0
     errors = 0
@@ -528,29 +575,72 @@ def export_to_elasticsearch():
     last_log_at = started_at
 
     try:
-        for ok, _ in es_helpers.parallel_bulk(
-            client,
-            actions(),
-            thread_count=ES_THREAD_COUNT,
-            queue_size=ES_QUEUE_SIZE,
-            chunk_size=ES_CHUNK_SIZE,
-            max_chunk_bytes=ES_MAX_CHUNK_BYTES,
-            request_timeout=ES_REQUEST_TIMEOUT,
-            raise_on_error=False,
-            raise_on_exception=False,
+        if _run_with_retry(
+            "index existence check",
+            lambda: client.indices.exists(index=ES_INDEX),
+            retryable_exceptions,
         ):
-            processed += 1
-            if ok:
-                indexed += 1
-            else:
-                errors += 1
+            _run_with_retry(
+                "index delete",
+                lambda: client.indices.delete(index=ES_INDEX),
+                retryable_exceptions,
+            )
 
-            if ES_PROGRESS_EVERY > 0 and processed % ES_PROGRESS_EVERY == 0:
+        _run_with_retry(
+            "index create",
+            lambda: client.indices.create(index=ES_INDEX),
+            retryable_exceptions,
+        )
+
+        if ES_FAST_INDEX_MODE:
+            settings = _run_with_retry(
+                "index settings fetch",
+                lambda: client.indices.get_settings(index=ES_INDEX),
+                retryable_exceptions,
+            )
+            index_settings = settings.get(ES_INDEX, {}).get("settings", {}).get("index", {})
+            original_refresh_interval = index_settings.get("refresh_interval")
+            original_replicas = index_settings.get("number_of_replicas")
+
+            _run_with_retry(
+                "index fast-mode settings update",
+                lambda: client.indices.put_settings(
+                    index=ES_INDEX,
+                    settings={
+                        "refresh_interval": "-1",
+                        "number_of_replicas": 0,
+                    },
+                ),
+                retryable_exceptions,
+            )
+
+        for batch_number, batch_actions in enumerate(_iter_elasticsearch_actions(hook), start=1):
+            success_count, batch_errors = _run_with_retry(
+                f"bulk batch {batch_number}",
+                lambda actions=batch_actions: es_helpers.bulk(
+                    client,
+                    actions,
+                    chunk_size=ES_CHUNK_SIZE,
+                    max_chunk_bytes=ES_MAX_CHUNK_BYTES,
+                    request_timeout=ES_REQUEST_TIMEOUT,
+                    raise_on_error=False,
+                    raise_on_exception=True,
+                ),
+                retryable_exceptions,
+            )
+
+            batch_size = len(batch_actions)
+            processed += batch_size
+            indexed += success_count
+            errors += len(batch_errors)
+
+            if ES_PROGRESS_EVERY > 0 and processed // ES_PROGRESS_EVERY > (processed - batch_size) // ES_PROGRESS_EVERY:
                 now = time.monotonic()
                 elapsed = now - started_at
                 interval = now - last_log_at
                 total_rate = processed / elapsed if elapsed > 0 else 0.0
-                interval_rate = ES_PROGRESS_EVERY / interval if interval > 0 else 0.0
+                processed_since_last_log = processed - max(processed - batch_size, 0)
+                interval_rate = processed_since_last_log / interval if interval > 0 else 0.0
                 remaining_docs = max(total_rows - processed, 0)
                 eta_seconds = (remaining_docs / total_rate) if total_rate > 0 else None
                 eta_text = _format_duration(eta_seconds) if eta_seconds is not None else "n/a"
@@ -569,7 +659,11 @@ def export_to_elasticsearch():
         if errors:
             raise ValueError(f"Elasticsearch bulk export completed with {errors} errors.")
 
-        client.indices.refresh(index=ES_INDEX)
+        _run_with_retry(
+            "index refresh",
+            lambda: client.indices.refresh(index=ES_INDEX),
+            retryable_exceptions,
+        )
         completed_at = time.monotonic()
         total_elapsed = completed_at - started_at
         total_elapsed_text = _format_duration(total_elapsed)
@@ -585,15 +679,22 @@ def export_to_elasticsearch():
         )
         return {"indexed": indexed, "errors": errors, "index": ES_INDEX}
     finally:
-        if ES_FAST_INDEX_MODE:
-            restore_settings = {}
-            if original_refresh_interval is not None:
-                restore_settings["refresh_interval"] = original_refresh_interval
-            if original_replicas is not None:
-                restore_settings["number_of_replicas"] = original_replicas
+        try:
+            if ES_FAST_INDEX_MODE:
+                restore_settings = {}
+                if original_refresh_interval is not None:
+                    restore_settings["refresh_interval"] = original_refresh_interval
+                if original_replicas is not None:
+                    restore_settings["number_of_replicas"] = original_replicas
 
-            if restore_settings:
-                client.indices.put_settings(index=ES_INDEX, settings=restore_settings)
+                if restore_settings:
+                    _run_with_retry(
+                        "index settings restore",
+                        lambda: client.indices.put_settings(index=ES_INDEX, settings=restore_settings),
+                        retryable_exceptions,
+                    )
+        finally:
+            client.close()
 
 
 with DAG(

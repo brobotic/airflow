@@ -278,14 +278,14 @@ def test_export_to_elasticsearch_includes_actor_fields(monkeypatch):
 
     captured = {}
 
-    def fake_parallel_bulk(client, actions, **kwargs):
+    def fake_bulk(client, actions, **kwargs):
         captured["actions"] = list(actions)
-        for _ in captured["actions"]:
-            yield True, {}
+        return len(captured["actions"]), []
 
     monkeypatch.setattr(module, "PostgresHook", FakeHookExport)
     monkeypatch.setattr(module, "_create_elasticsearch_client", lambda: FakeClient())
-    monkeypatch.setattr(module, "_get_elasticsearch_modules", lambda: (None, type("Helpers", (), {"parallel_bulk": staticmethod(fake_parallel_bulk)})))
+    monkeypatch.setattr(module, "_get_elasticsearch_modules", lambda: (None, type("Helpers", (), {"bulk": staticmethod(fake_bulk)})))
+    monkeypatch.setattr(module, "_get_elasticsearch_retryable_exceptions", lambda: (RuntimeError,))
 
     result = module.export_to_elasticsearch()
 
@@ -293,3 +293,107 @@ def test_export_to_elasticsearch_includes_actor_fields(monkeypatch):
     assert result["errors"] == 0
     assert captured["actions"][0]["_source"]["actors_nconsts"] == "nm2,nm3"
     assert captured["actions"][0]["_source"]["actors_names"] == "Actor A, Actor B"
+
+
+def test_export_to_elasticsearch_retries_transient_bulk_failures(monkeypatch):
+    """Ensure transient connection failures are retried instead of failing the whole export."""
+
+    class FakeIndices:
+        def exists(self, index):
+            return False
+
+        def create(self, index):
+            return None
+
+        def refresh(self, index):
+            return None
+
+    class FakeClient:
+        def __init__(self):
+            self.indices = FakeIndices()
+
+        def close(self):
+            return None
+
+    class FakeCursor:
+        def __init__(self):
+            self.rows = [
+                (
+                    "tt1",
+                    "Movie A",
+                    "Movie A",
+                    2000,
+                    "nm1",
+                    "Director A",
+                    "nm2",
+                    "Actor A",
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    8.0,
+                    100,
+                    None,
+                )
+            ]
+            self.itersize = None
+
+        def execute(self, sql):
+            return None
+
+        def fetchmany(self, size):
+            if self.rows:
+                rows, self.rows = self.rows, []
+                return rows
+            return []
+
+        def close(self):
+            return None
+
+    class FakeConn:
+        def __init__(self):
+            self.cursor_instance = FakeCursor()
+
+        def cursor(self, name=None):
+            return self.cursor_instance
+
+        def close(self):
+            return None
+
+    class FakeHookExport:
+        def __init__(self, postgres_conn_id):
+            self.postgres_conn_id = postgres_conn_id
+            self.conn = FakeConn()
+
+        def get_first(self, sql, parameters=None):
+            if "COUNT(*) FROM mart_movie_credits;" in sql:
+                return (1,)
+            return (0,)
+
+        def get_conn(self):
+            return self.conn
+
+    class TransientEsError(Exception):
+        pass
+
+    attempts = {"count": 0}
+
+    def fake_bulk(client, actions, **kwargs):
+        attempts["count"] += 1
+        if attempts["count"] == 1:
+            raise TransientEsError("temporary connection drop")
+        return len(list(actions)), []
+
+    monkeypatch.setattr(module, "PostgresHook", FakeHookExport)
+    monkeypatch.setattr(module, "_create_elasticsearch_client", lambda: FakeClient())
+    monkeypatch.setattr(module, "_get_elasticsearch_modules", lambda: (None, type("Helpers", (), {"bulk": staticmethod(fake_bulk)})))
+    monkeypatch.setattr(module, "_get_elasticsearch_retryable_exceptions", lambda: (TransientEsError,))
+    monkeypatch.setattr(module.time, "sleep", lambda seconds: None)
+
+    result = module.export_to_elasticsearch()
+
+    assert attempts["count"] == 2
+    assert result["indexed"] == 1
+    assert result["errors"] == 0
