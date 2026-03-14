@@ -159,7 +159,27 @@ QUERY_SQL = {
         WHERE film_year = {film_year}
         ORDER BY COALESCE(watched_date, entry_date) DESC NULLS LAST, diary_id DESC;
     """,
+    "movie-entries": """
+        SELECT
+            COALESCE(watched_date, entry_date) AS activity_date,
+            entry_date,
+            watched_date,
+            film_name,
+            film_year,
+            rating,
+            rewatch,
+            tags,
+            letterboxd_uri,
+            diary_id
+        FROM letterboxd_diary
+        {movie_entries_filter}
+        ORDER BY COALESCE(watched_date, entry_date) DESC NULLS LAST, diary_id DESC;
+    """,
 }
+
+
+def _sql_quote_literal(value: str) -> str:
+    return "'" + value.replace("'", "''") + "'"
 
 
 def parse_args() -> argparse.Namespace:
@@ -192,6 +212,13 @@ def parse_args() -> argparse.Namespace:
         help=(
             "Filter queries by movie release year (film_year). "
             "Required for --query film-year-entries."
+        ),
+    )
+    parser.add_argument(
+        "--film-name",
+        help=(
+            "Filter queries by exact movie title (case-insensitive). "
+            "Required for --query movie-entries."
         ),
     )
     parser.add_argument(
@@ -326,6 +353,10 @@ def render_table(args: argparse.Namespace, sql: str, csv_output: str) -> None:
     title = f"Letterboxd Diary Mart ({args.query})"
     if args.year is not None:
         title += f" | year={args.year}"
+    if args.film_year is not None and args.query == "movie-entries":
+        title += f" | film_year={args.film_year}"
+    if args.film_name:
+        title += f" | film={args.film_name}"
 
     console = Console()
 
@@ -459,6 +490,10 @@ def main() -> int:
     if args.query == "film-year-entries" and args.film_year is None:
         print("Error: --query film-year-entries requires --film-year", file=sys.stderr)
         return 1
+    if args.query == "movie-entries":
+        if not args.film_name or not args.film_name.strip():
+            print("Error: --query movie-entries requires --film-name", file=sys.stderr)
+            return 1
 
     month_year_filter = ""
     if args.year is not None and args.query in {"monthly", "rewatch-months"}:
@@ -483,6 +518,15 @@ def main() -> int:
             f"{args.year}"
         )
 
+    movie_entries_filter = ""
+    if args.query == "movie-entries":
+        movie_entries_filters = [
+            f"lower(trim(film_name)) = lower(trim({_sql_quote_literal(args.film_name.strip())}))"
+        ]
+        if args.film_year is not None:
+            movie_entries_filters.append(f"film_year = {args.film_year}")
+        movie_entries_filter = "WHERE " + " AND ".join(movie_entries_filters)
+
     sql = QUERY_SQL[args.query].format(
         limit=args.limit,
         year=args.year,
@@ -490,6 +534,7 @@ def main() -> int:
         month_year_filter=month_year_filter,
         recent_entries_filter=recent_entries_filter,
         raw_year_filter=raw_year_filter,
+        movie_entries_filter=movie_entries_filter,
     ).strip()
 
     psql_flags = ["-P", "pager=off"]

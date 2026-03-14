@@ -231,6 +231,9 @@ python scripts/query_letterboxd_diary_mart.py --query top-tags --year 2024 --lim
 python scripts/query_letterboxd_diary_mart.py --query rewatch-months --limit 12
 python scripts/query_letterboxd_diary_mart.py --query recent-entries --limit 25
 python scripts/query_letterboxd_diary_mart.py --query film-year-entries --film-year 1999
+# specific movie diary entries
+python scripts/query_letterboxd_diary_mart.py --query movie-entries --film-name "The Matrix"
+python scripts/query_letterboxd_diary_mart.py --query movie-entries --film-name "Alien" --film-year 1979
 ```
 
 Remote mode env vars:
@@ -257,6 +260,7 @@ Available `--query` values:
 - `recent-entries`
 - `year-overview`
 - `film-year-entries`
+- `movie-entries`
 
 For the movie-level join mart, use `scripts/query_letterboxd_movie_matches.py`.
 
@@ -315,9 +319,27 @@ Query the Elasticsearch movie credits mart by person name:
 
 ```bash
 python scripts/query_movie_credits.py --director "Christopher Nolan"
+python scripts/query_movie_credits.py --actor "Toshiro Mifune"
 python scripts/query_movie_credits.py --cinematographer "Roger Deakins"
 python scripts/query_movie_credits.py --editor "Thelma Schoonmaker"
 python scripts/query_movie_credits.py --composer "Hans Zimmer"
+```
+
+Common workflows:
+
+1. Find all diary entries for one movie title.
+
+```bash
+python scripts/query_letterboxd_diary_mart.py --query movie-entries --film-name "The Matrix"
+python scripts/query_letterboxd_diary_mart.py --query movie-entries --film-name "Alien" --film-year 1979
+```
+
+2. Query related movie credits by person role.
+
+```bash
+python scripts/query_movie_credits.py --actor "Sigourney Weaver"
+python scripts/query_movie_credits.py --editor "Dede Allen"
+python scripts/query_movie_credits.py --composer "Ennio Morricone"
 ```
 
 Run it from the host with `psql`:

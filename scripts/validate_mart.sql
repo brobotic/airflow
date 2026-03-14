@@ -291,3 +291,53 @@ FROM mart_episode_enriched
 WHERE lower(series_title) = 'lost'
 ORDER BY num_votes DESC NULLS LAST, average_rating DESC NULLS LAST
 LIMIT 20;
+
+-- 25. letterboxd_diary mart: row count + freshness by metric_type
+SELECT
+    metric_type,
+    COUNT(*) AS row_count,
+    MAX(last_refreshed_at) AS last_refreshed_at
+FROM mart_letterboxd_diary
+GROUP BY metric_type
+ORDER BY metric_type;
+
+-- 26. letterboxd_diary source: most-logged movies
+SELECT
+    film_name,
+    film_year,
+    COUNT(*) AS diary_entries,
+    ROUND(AVG(rating)::numeric, 2) AS avg_rating,
+    COUNT(*) FILTER (WHERE COALESCE(rewatch, FALSE)) AS rewatch_count,
+    MIN(COALESCE(watched_date, entry_date)) AS first_watch_date,
+    MAX(COALESCE(watched_date, entry_date)) AS last_watch_date
+FROM letterboxd_diary
+GROUP BY film_name, film_year
+ORDER BY diary_entries DESC, film_name
+LIMIT 15;
+
+-- 27. letterboxd_diary source: all entries for top logged movie
+WITH top_movie AS (
+    SELECT
+        film_name,
+        film_year
+    FROM letterboxd_diary
+    GROUP BY film_name, film_year
+    ORDER BY COUNT(*) DESC, film_name
+    LIMIT 1
+)
+SELECT
+    COALESCE(d.watched_date, d.entry_date) AS activity_date,
+    d.entry_date,
+    d.watched_date,
+    d.film_name,
+    d.film_year,
+    d.rating,
+    d.rewatch,
+    d.tags,
+    d.letterboxd_uri,
+    d.diary_id
+FROM letterboxd_diary d
+JOIN top_movie m
+    ON d.film_name = m.film_name
+   AND d.film_year IS NOT DISTINCT FROM m.film_year
+ORDER BY COALESCE(d.watched_date, d.entry_date) DESC NULLS LAST, d.diary_id DESC;
