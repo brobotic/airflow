@@ -1,0 +1,33 @@
+---
+- name: Deploy Airflow repository and restart scheduler
+  hosts: airflow
+  become: false
+  gather_facts: false
+
+  vars:
+    airflow_repo_url: git@github.com:brobotic/airflow.git
+    airflow_repo_dest: /opt/github/airflow
+    airflow_repo_branch: main
+
+  tasks:
+    - name: Ensure parent directory exists
+      ansible.builtin.file:
+        path: "{{ airflow_repo_dest | dirname }}"
+        state: directory
+        mode: "0755"
+
+    - name: Checkout latest Airflow repository
+      ansible.builtin.git:
+        repo: "{{ airflow_repo_url }}"
+        dest: "{{ airflow_repo_dest }}"
+        version: "{{ airflow_repo_branch }}"
+        update: true
+        accept_hostkey: true
+      register: airflow_repo_checkout
+
+    - name: Restart airflow scheduler when repository changed
+      ansible.builtin.command:
+        cmd: docker compose -f airflow.yaml restart airflow-scheduler
+        chdir: "{{ airflow_repo_dest }}"
+      when: airflow_repo_checkout.changed
+      changed_when: true
