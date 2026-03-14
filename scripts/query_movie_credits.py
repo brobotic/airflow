@@ -48,6 +48,11 @@ def parse_args() -> argparse.Namespace:
         "--composer",
         help="Composer name to search for, e.g. 'Hans Zimmer'",
     )
+    parser.add_argument(
+        "--show-actors",
+        action="store_true",
+        help="Show the Actors column in output (hidden by default)",
+    )
     return parser.parse_args()
 
 
@@ -129,28 +134,40 @@ def query_movies_by_person(
     return rows
 
 
-def render_table(rows: list[dict[str, Any]], label: str, person_name: str) -> None:
+def render_table(
+    rows: list[dict[str, Any]],
+    label: str,
+    person_name: str,
+    show_actors: bool = False,
+) -> None:
     console = Console()
     table = Table(title=f"Movies for {label}: {person_name}")
     table.add_column("Title", style="cyan")
     table.add_column("Year", justify="right")
     table.add_column("Director", style="green")
-    table.add_column("Actor", style="red")
+    if show_actors:
+        table.add_column("Actor", style="red")
     table.add_column("DoP", style="magenta")
     table.add_column("Editor", style="yellow")
     table.add_column("Composer", style="blue")
 
     for row in rows:
         year = "" if row["year"] is None else str(row["year"])
-        table.add_row(
+        cells = [
             row["title"],
             year,
             row["director"],
-            row["actor"],
-            row["dop"],
-            row["editor"],
-            row["composer"],
+        ]
+        if show_actors:
+            cells.append(row["actor"])
+        cells.extend(
+            [
+                row["dop"],
+                row["editor"],
+                row["composer"],
+            ]
         )
+        table.add_row(*cells)
 
     if not rows:
         console.print(f"No movies found for {label}: [bold]{person_name}[/bold]")
@@ -198,7 +215,7 @@ def main() -> int:
             person_name=person_name,
             search_field=search_field,
         )
-        render_table(rows, label, person_name)
+        render_table(rows, label, person_name, show_actors=args.show_actors)
         return 0
     finally:
         client.close()
